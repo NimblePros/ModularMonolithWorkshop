@@ -20,7 +20,7 @@ Follow these steps to create the modular monolith solution from scratch:
 ### 1. Create the solution file
 
 ```bash
-dotnet new sln --name Nimble.Modulith --use-program-main --output .
+dotnet new sln --name Nimble.Modulith --output .
 ```
 
 This creates a `Nimble.Modulith.slnx` file in the repository root.
