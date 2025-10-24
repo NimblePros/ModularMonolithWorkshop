@@ -1136,12 +1136,12 @@ public class Create(IMediator mediator) : Endpoint<CreateCustomerRequest, Custom
 
         if (!result.IsSuccess)
         {
-            await SendResultAsync(result.ToMinimalApiResult());
+            await Send.NotFoundAsync(ct);
             return;
         }
 
         // Map UseCases DTO to Endpoint Response DTO
-        var response = new CustomerResponse(
+        Response = new CustomerResponse(
             result.Value.Id,
             result.Value.FirstName,
             result.Value.LastName,
@@ -1156,7 +1156,7 @@ public class Create(IMediator mediator) : Endpoint<CreateCustomerRequest, Custom
             )
         );
 
-        await SendCreatedAtAsync<GetById>(new { id = result.Value.Id }, response, cancellation: ct);
+        await Send.CreatedAtAsync<GetById>(new { id = result.Value.Id }, generateAbsoluteUrl: false, cancellation: ct);
     }
 }
 ```
@@ -1194,12 +1194,12 @@ public class List(IMediator mediator) : EndpointWithoutRequest<List<CustomerResp
 
         if (!result.IsSuccess)
         {
-            await SendResultAsync(result.ToMinimalApiResult());
+            await Send.NotFoundAsync(ct);
             return;
         }
 
         // Map UseCases DTOs to Endpoint Response DTOs
-        var response = result.Value.Select(c => new CustomerResponse(
+        Response = result.Value.Select(c => new CustomerResponse(
             c.Id,
             c.FirstName,
             c.LastName,
@@ -1213,8 +1213,6 @@ public class List(IMediator mediator) : EndpointWithoutRequest<List<CustomerResp
                 c.Address.Country
             )
         )).ToList();
-
-        await SendOkAsync(response, ct);
     }
 }
 ```
@@ -1253,12 +1251,12 @@ public class GetById(IMediator mediator) : EndpointWithoutRequest<CustomerRespon
 
         if (!result.IsSuccess)
         {
-            await SendResultAsync(result.ToMinimalApiResult());
+            await Send.NotFoundAsync(ct);
             return;
         }
 
         // Map UseCases DTO to Endpoint Response DTO
-        var response = new CustomerResponse(
+        Response = new CustomerResponse(
             result.Value.Id,
             result.Value.FirstName,
             result.Value.LastName,
@@ -1272,8 +1270,6 @@ public class GetById(IMediator mediator) : EndpointWithoutRequest<CustomerRespon
                 result.Value.Address.Country
             )
         );
-
-        await SendOkAsync(response, ct);
     }
 }
 ```
@@ -1323,12 +1319,12 @@ public class Update(IMediator mediator) : Endpoint<UpdateCustomerRequest, Custom
 
         if (!result.IsSuccess)
         {
-            await SendResultAsync(result.ToMinimalApiResult());
+            await Send.NotFoundAsync(ct);
             return;
         }
 
         // Map UseCases DTO to Endpoint Response DTO
-        var response = new CustomerResponse(
+        Response = new CustomerResponse(
             result.Value.Id,
             result.Value.FirstName,
             result.Value.LastName,
@@ -1342,8 +1338,6 @@ public class Update(IMediator mediator) : Endpoint<UpdateCustomerRequest, Custom
                 result.Value.Address.Country
             )
         );
-
-        await SendOkAsync(response, ct);
     }
 }
 ```
@@ -1382,11 +1376,11 @@ public class Delete(IMediator mediator) : EndpointWithoutRequest
 
         if (!result.IsSuccess)
         {
-            await SendResultAsync(result.ToMinimalApiResult());
+            await Send.NotFoundAsync(ct);
             return;
         }
 
-        await SendNoContentAsync(ct);
+        await Send.NoContentAsync(ct);
     }
 }
 ```
@@ -1479,9 +1473,7 @@ Create `Nimble.Modulith.Customers/CustomersModuleExtensions.cs`:
 ```csharp
 ```csharp
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Nimble.Modulith.Customers.Domain.Interfaces;
 using Nimble.Modulith.Customers.Infrastructure.Data;
 
@@ -1489,26 +1481,24 @@ namespace Nimble.Modulith.Customers;
 
 public static class CustomersModuleExtensions
 {
-    public static IServiceCollection AddCustomersModule(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
+    public static IHostApplicationBuilder AddCustomersModuleServices(this IHostApplicationBuilder builder, ILogger logger)
     {
-        // Register the DbContext
-        services.AddDbContext<CustomersDbContext>(options =>
-        {
-            var connectionString = configuration.GetConnectionString("customersdb");
-            options.UseSqlServer(connectionString);
-            
-            if (environment.IsDevelopment())
-            {
-                options.EnableSensitiveDataLogging();
-                options.EnableDetailedErrors();
-            }
-        });
+        // Register the DbContext with Aspire
+        builder.AddSqlServerDbContext<CustomersDbContext>("customersdb");
 
         // Register repositories
-        services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
-        services.AddScoped(typeof(IReadRepository<>), typeof(EfReadRepository<>));
+        builder.Services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
+        builder.Services.AddScoped(typeof(IReadRepository<>), typeof(EfReadRepository<>));
 
-        return services;
+        return builder;
+    }
+
+    public static async Task<WebApplication> EnsureCustomersModuleDatabaseAsync(this WebApplication app)
+    {
+        using var scope = app.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<CustomersDbContext>();
+        await context.Database.MigrateAsync();
+        return app;
     }
 }
 ```
@@ -1560,10 +1550,10 @@ builder.Services.SwaggerDocument(o =>
     };
 });
 
-// Register modules
-builder.Services.AddUsersModule(builder.Configuration, builder.Environment);
-builder.Services.AddProductsModule(builder.Configuration, builder.Environment);
-builder.Services.AddCustomersModule(builder.Configuration, builder.Environment);
+// Register modules using IHostApplicationBuilder pattern
+builder.AddUsersModuleServices(logger);
+builder.AddProductsModuleServices(logger);
+builder.AddCustomersModuleServices(logger);
 
 var app = builder.Build();
 
@@ -1585,6 +1575,11 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapDefaultEndpoints();
+
+// Ensure databases are created and migrated
+await app.EnsureUsersModuleDatabaseAsync();
+await app.EnsureProductsModuleDatabaseAsync();
+await app.EnsureCustomersModuleDatabaseAsync();
 
 app.Run();
 ```
