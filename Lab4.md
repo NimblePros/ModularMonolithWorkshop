@@ -229,20 +229,54 @@ public class Address
 Create `Nimble.Modulith.Customers/Domain/OrderAggregate/Order.cs`:
 
 ```csharp
+using System.Diagnostics.CodeAnalysis;
 using Nimble.Modulith.Customers.Domain.Common;
 
 namespace Nimble.Modulith.Customers.Domain.OrderAggregate;
 
 public class Order : EntityBase
 {
+    private readonly List<OrderItem> _items = new();
+
     public int CustomerId { get; set; }
     public string OrderNumber { get; set; } = string.Empty;
-    public DateTime OrderDate { get; set; } = DateTime.UtcNow;
+    public DateOnly OrderDate { get; set; }
     public OrderStatus Status { get; set; } = OrderStatus.Pending;
-    public decimal TotalAmount { get; set; }
-    public List<OrderItem> Items { get; set; } = new();
+    public decimal TotalAmount => Items.Sum(i => i.TotalPrice);
+    public IReadOnlyList<OrderItem> Items => _items.AsReadOnly();
+
+    public void AddItem(OrderItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+
+        // Check if an item with the same product already exists
+        var existingItem = _items.FirstOrDefault(i => i.ProductId == item.ProductId);
+        
+        if (existingItem != null)
+        {
+            // Combine quantities for existing product
+            existingItem.Quantity += item.Quantity;
+        }
+        else
+        {
+            _items.Add(item);
+        }
+    }
+
+    public void RemoveItem(OrderItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        _items.Remove(item);
+    }
 }
 ```
+
+**Key Design Decisions:**
+- **DateOnly for OrderDate**: Using `DateOnly` instead of `DateTime` since we only care about the date, not the time
+- **Encapsulated Collection**: `Items` uses a private backing field `_items` and exposes `IReadOnlyList<OrderItem>` to prevent external modification
+- **Calculated TotalAmount**: `TotalAmount` is a computed property that sums item totals, ensuring it's always accurate
+- **AddItem with Guard Clauses**: Validates input and combines quantities when the same product is added multiple times
+- **RemoveItem**: Safely removes items with null checking
 
 ### 5. Create OrderItem Entity
 
@@ -356,29 +390,30 @@ public class CustomerByEmailSpec : Specification<Customer>
 
 ### 2. Create Order Specifications
 
-Create `Nimble.Modulith.Customers/Domain/OrderAggregate/Specifications/OrderByIdSpec.cs`:
+Create `Nimble.Modulith.Customers/Domain/OrderAggregate/OrderByIdSpec.cs`:
 
 ```csharp
 using Ardalis.Specification;
 
-namespace Nimble.Modulith.Customers.Domain.OrderAggregate.Specifications;
+namespace Nimble.Modulith.Customers.Domain.OrderAggregate;
 
-public class OrderByIdSpec : Specification<Order>
+public class OrderByIdSpec : Specification<Order>, ISingleResultSpecification<Order>
 {
     public OrderByIdSpec(int orderId)
     {
-        Query.Where(o => o.Id == orderId)
+        Query
+            .Where(o => o.Id == orderId)
             .Include(o => o.Items);
     }
 }
 ```
 
-Create `Nimble.Modulith.Customers/Domain/OrderAggregate/Specifications/OrdersByCustomerSpec.cs`:
+Create `Nimble.Modulith.Customers/Domain/OrderAggregate/OrdersByCustomerSpec.cs`:
 
 ```csharp
 using Ardalis.Specification;
 
-namespace Nimble.Modulith.Customers.Domain.OrderAggregate.Specifications;
+namespace Nimble.Modulith.Customers.Domain.OrderAggregate;
 
 public class OrdersByCustomerSpec : Specification<Order>
 {
@@ -484,10 +519,13 @@ public class OrderConfiguration : IEntityTypeConfiguration<Order>
         builder.HasMany(o => o.Items)
             .WithOne()
             .HasForeignKey(i => i.OrderId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Cascade)
+            .Metadata.PrincipalToDependent?.SetField("_items");
     }
 }
 ```
+
+**Note**: The `.Metadata.PrincipalToDependent?.SetField("_items")` configuration tells EF Core to use the private backing field `_items` for the Items collection, which is necessary since we exposed it as `IReadOnlyList<OrderItem>`.
 
 ### 3. Create OrderItem Configuration
 
@@ -559,72 +597,6 @@ public class EfReadRepository<T> : RepositoryBase<T>, IReadRepository<T> where T
     {
     }
 }
-```
-
-## Create Contracts (For Cross-Module Communication)
-using Ardalis.Specification;
-
-namespace Nimble.Modulith.Customers.CustomerAggregate.Specifications;
-
-public class CustomerByIdSpec : Specification<Customer>
-{
-    public CustomerByIdSpec(int customerId)
-    {
-        Query.Where(c => c.Id == customerId);
-    }
-}
-```
-
-Create `Nimble.Modulith.Customers/CustomerAggregate/Specifications/CustomerByEmailSpec.cs`:
-
-```csharp
-using Ardalis.Specification;
-
-namespace Nimble.Modulith.Customers.CustomerAggregate.Specifications;
-
-public class CustomerByEmailSpec : Specification<Customer>
-{
-    public CustomerByEmailSpec(string email)
-    {
-        Query.Where(c => c.Email == email);
-    }
-}
-```
-
-### 2. Create Order Specifications
-
-Create `Nimble.Modulith.Customers/OrderAggregate/Specifications/OrderByIdSpec.cs`:
-
-```csharp
-using Ardalis.Specification;
-
-namespace Nimble.Modulith.Customers.OrderAggregate.Specifications;
-
-public class OrderByIdSpec : Specification<Order>
-{
-    public OrderByIdSpec(int orderId)
-    {
-        Query.Where(o => o.Id == orderId)
-            .Include(o => o.Items);
-    }
-}
-```
-
-Create `Nimble.Modulith.Customers/OrderAggregate/Specifications/OrdersByCustomerSpec.cs`:
-
-```csharp
-using Ardalis.Specification;
-
-namespace Nimble.Modulith.Customers.OrderAggregate.Specifications;
-
-public class OrdersByCustomerSpec : Specification<Order>
-{
-    public OrdersByCustomerSpec(int customerId)
-    {
-        Query.Where(o => o.CustomerId == customerId)
-            .Include(o => o.Items)
-            .OrderByDescending(o => o.OrderDate);
-    }
 }
 ```
 
@@ -805,128 +777,6 @@ public class CreateCustomerHandler(IRepository<Customer> repository)
 }
 ```
 
-Create `Nimble.Modulith.Customers/UseCases/Customers/Commands/UpdateCustomerCommand.cs`:
-
-```csharp
-using Ardalis.Result;
-using Mediator;
-
-namespace Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-public record UpdateCustomerCommand(
-    int Id,
-    string FirstName,
-    string LastName,
-    string PhoneNumber,
-    string Street,
-    string City,
-    string State,
-    string PostalCode,
-    string Country
-) : ICommand<Result<CustomerDto>>;
-```
-
-Create `Nimble.Modulith.Customers/UseCases/Customers/Commands/UpdateCustomerHandler.cs`:
-
-```csharp
-using Ardalis.Result;
-using Mediator;
-using Nimble.Modulith.Customers.Domain.CustomerAggregate;
-using Nimble.Modulith.Customers.Domain.Interfaces;
-
-namespace Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-public class UpdateCustomerHandler(IRepository<Customer> repository) 
-    : ICommandHandler<UpdateCustomerCommand, Result<CustomerDto>>
-{
-    public async ValueTask<Result<CustomerDto>> Handle(UpdateCustomerCommand command, CancellationToken ct)
-    {
-        var customer = await repository.GetByIdAsync(command.Id, ct);
-
-        if (customer is null)
-        {
-            return Result<CustomerDto>.NotFound();
-        }
-
-        customer.FirstName = command.FirstName;
-        customer.LastName = command.LastName;
-        customer.PhoneNumber = command.PhoneNumber;
-        customer.Address = new Address
-        {
-            Street = command.Street,
-            City = command.City,
-            State = command.State,
-            PostalCode = command.PostalCode,
-            Country = command.Country
-        };
-        customer.UpdatedAt = DateTime.UtcNow;
-
-        await repository.UpdateAsync(customer, ct);
-        await repository.SaveChangesAsync(ct);
-
-        var dto = new CustomerDto(
-            customer.Id,
-            customer.FirstName,
-            customer.LastName,
-            customer.Email,
-            customer.PhoneNumber,
-            new AddressDto(
-                customer.Address.Street,
-                customer.Address.City,
-                customer.Address.State,
-                customer.Address.PostalCode,
-                customer.Address.Country
-            ),
-            customer.CreatedAt,
-            customer.UpdatedAt
-        );
-
-        return Result<CustomerDto>.Success(dto);
-    }
-}
-```
-
-Create `Nimble.Modulith.Customers/UseCases/Customers/Commands/DeleteCustomerCommand.cs`:
-
-```csharp
-using Ardalis.Result;
-using Mediator;
-
-namespace Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-public record DeleteCustomerCommand(int Id) : ICommand<Result>;
-```
-
-Create `Nimble.Modulith.Customers/UseCases/Customers/Commands/DeleteCustomerHandler.cs`:
-
-```csharp
-using Ardalis.Result;
-using Mediator;
-using Nimble.Modulith.Customers.Domain.CustomerAggregate;
-using Nimble.Modulith.Customers.Domain.Interfaces;
-
-namespace Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-public class DeleteCustomerHandler(IRepository<Customer> repository) 
-    : ICommandHandler<DeleteCustomerCommand, Result>
-{
-    public async ValueTask<Result> Handle(DeleteCustomerCommand command, CancellationToken ct)
-    {
-        var customer = await repository.GetByIdAsync(command.Id, ct);
-
-        if (customer is null)
-        {
-            return Result.NotFound();
-        }
-
-        await repository.DeleteAsync(customer, ct);
-        await repository.SaveChangesAsync(ct);
-
-        return Result.Success();
-    }
-}
-```
-
 ### 3. Create Customer Queries
 
 Create `Nimble.Modulith.Customers/UseCases/Customers/Queries/GetCustomerByIdQuery.cs`:
@@ -1081,13 +931,6 @@ public record AddressRequest(
     string State,
     string PostalCode,
     string Country
-);
-
-public record UpdateCustomerRequest(
-    string FirstName,
-    string LastName,
-    string PhoneNumber,
-    AddressRequest Address
 );
 ```
 
@@ -1274,129 +1117,11 @@ public class GetById(IMediator mediator) : EndpointWithoutRequest<CustomerRespon
 }
 ```
 
-### 5. Update Customer Endpoint
-
-Create `Nimble.Modulith.Customers/Endpoints/Customers/Update.cs`:
-
-```csharp
-using Ardalis.Result;
-using FastEndpoints;
-using Mediator;
-using Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-namespace Nimble.Modulith.Customers.Endpoints.Customers;
-
-public class Update(IMediator mediator) : Endpoint<UpdateCustomerRequest, CustomerResponse>
-{
-    public override void Configure()
-    {
-        Put("/customers/{id}");
-        AllowAnonymous();
-        Summary(s =>
-        {
-            s.Summary = "Update a customer";
-            s.Description = "Updates an existing customer with the provided information";
-        });
-        Tags("customers");
-    }
-
-    public override async Task HandleAsync(UpdateCustomerRequest req, CancellationToken ct)
-    {
-        var id = Route<int>("id");
-        var command = new UpdateCustomerCommand(
-            id,
-            req.FirstName,
-            req.LastName,
-            req.PhoneNumber,
-            req.Address.Street,
-            req.Address.City,
-            req.Address.State,
-            req.Address.PostalCode,
-            req.Address.Country
-        );
-
-        var result = await mediator.Send(command, ct);
-
-        if (!result.IsSuccess)
-        {
-            await Send.NotFoundAsync(ct);
-            return;
-        }
-
-        // Map UseCases DTO to Endpoint Response DTO
-        Response = new CustomerResponse(
-            result.Value.Id,
-            result.Value.FirstName,
-            result.Value.LastName,
-            result.Value.Email,
-            result.Value.PhoneNumber,
-            new AddressResponse(
-                result.Value.Address.Street,
-                result.Value.Address.City,
-                result.Value.Address.State,
-                result.Value.Address.PostalCode,
-                result.Value.Address.Country
-            )
-        );
-    }
-}
-```
-
-### 6. Delete Customer Endpoint
-
-Create `Nimble.Modulith.Customers/Endpoints/Customers/Delete.cs`:
-
-```csharp
-using Ardalis.Result;
-using FastEndpoints;
-using Mediator;
-using Nimble.Modulith.Customers.UseCases.Customers.Commands;
-
-namespace Nimble.Modulith.Customers.Endpoints.Customers;
-
-public class Delete(IMediator mediator) : EndpointWithoutRequest
-{
-    public override void Configure()
-    {
-        Delete("/customers/{id}");
-        AllowAnonymous();
-        Summary(s =>
-        {
-            s.Summary = "Delete a customer";
-            s.Description = "Deletes a customer by their ID";
-        });
-        Tags("customers");
-    }
-
-    public override async Task HandleAsync(CancellationToken ct)
-    {
-        var id = Route<int>("id");
-        var command = new DeleteCustomerCommand(id);
-        var result = await mediator.Send(command, ct);
-
-        if (!result.IsSuccess)
-        {
-            await Send.NotFoundAsync(ct);
-            return;
-        }
-
-        await Send.NoContentAsync(ct);
-    }
-}
-```
-
 ## Create Order Use Cases and Endpoints
 
-**Note**: Order endpoints follow the same pattern as Customer endpoints:
-1. Create Use Cases DTOs in `UseCases/Orders/`
-2. Create Commands and Handlers (CreateOrder, UpdateOrderStatus)
-3. Create Queries and Handlers (GetOrderById, ListOrders, GetOrdersByCustomer)
-4. Create Endpoint DTOs and endpoints that use Mediator to send commands/queries
-5. Map between UseCases DTOs and Endpoint Response DTOs
+Now we'll create the Order use cases and endpoints following the same Clean Architecture patterns we used for Customers.
 
-For brevity, here's a simplified example of the Create Order flow:
-
-### Order Use Cases DTO Example
+### 1. Create Order Use Cases DTOs
 
 Create `Nimble.Modulith.Customers/UseCases/Orders/OrderDto.cs`:
 
@@ -1407,7 +1132,7 @@ public record OrderDto(
     int Id,
     int CustomerId,
     string OrderNumber,
-    DateTime OrderDate,
+    DateOnly OrderDate,
     string Status,
     decimal TotalAmount,
     List<OrderItemDto> Items,
@@ -1425,7 +1150,388 @@ public record OrderItemDto(
 );
 ```
 
-### Order Endpoint DTO and Endpoint Example
+### 2. Create Order Commands
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderCommand.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public record CreateOrderCommand(
+    int CustomerId,
+    DateOnly OrderDate,
+    List<CreateOrderItemDto> Items
+) : ICommand<Result<OrderDto>>;
+
+public record CreateOrderItemDto(
+    int ProductId,
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice
+);
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderHandler.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+using Nimble.Modulith.Customers.Domain.CustomerAggregate;
+using Nimble.Modulith.Customers.Domain.Interfaces;
+using Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public class CreateOrderHandler(
+    IRepository<Order> orderRepository,
+    IReadRepository<Customer> customerRepository) 
+    : ICommandHandler<CreateOrderCommand, Result<OrderDto>>
+{
+    public async ValueTask<Result<OrderDto>> Handle(CreateOrderCommand command, CancellationToken ct)
+    {
+        // Verify customer exists
+        var customer = await customerRepository.GetByIdAsync(command.CustomerId, ct);
+        if (customer is null)
+        {
+            return Result<OrderDto>.NotFound($"Customer with ID {command.CustomerId} not found");
+        }
+
+        // Create order entity
+        var order = new Order
+        {
+            CustomerId = command.CustomerId,
+            OrderNumber = $"ORD-{DateTime.UtcNow:yyyyMMddHHmmss}",
+            OrderDate = command.OrderDate,
+            Status = OrderStatus.Pending,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        // Add order items
+        foreach (var itemDto in command.Items)
+        {
+            var item = new OrderItem
+            {
+                ProductId = itemDto.ProductId,
+                ProductName = itemDto.ProductName,
+                Quantity = itemDto.Quantity,
+                UnitPrice = itemDto.UnitPrice
+            };
+            order.AddItem(item);
+        }
+
+        await orderRepository.AddAsync(order, ct);
+        await orderRepository.SaveChangesAsync(ct);
+
+        // Map to DTO
+        var dto = new OrderDto(
+            order.Id,
+            order.CustomerId,
+            order.OrderNumber,
+            order.OrderDate,
+            order.Status.ToString(),
+            order.TotalAmount,
+            order.Items.Select(i => new OrderItemDto(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList(),
+            order.CreatedAt,
+            order.UpdatedAt
+        );
+
+        return Result<OrderDto>.Success(dto);
+    }
+}
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/AddOrderItemCommand.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public record AddOrderItemCommand(
+    int OrderId,
+    int ProductId,
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice
+) : ICommand<Result<OrderDto>>;
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/AddOrderItemHandler.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+using Nimble.Modulith.Customers.Domain.Interfaces;
+using Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public class AddOrderItemHandler(IRepository<Order> repository) 
+    : ICommandHandler<AddOrderItemCommand, Result<OrderDto>>
+{
+    public async ValueTask<Result<OrderDto>> Handle(AddOrderItemCommand command, CancellationToken ct)
+    {
+        var order = await repository.GetByIdAsync(command.OrderId, ct);
+
+        if (order is null)
+        {
+            return Result<OrderDto>.NotFound();
+        }
+
+        var item = new OrderItem
+        {
+            ProductId = command.ProductId,
+            ProductName = command.ProductName,
+            Quantity = command.Quantity,
+            UnitPrice = command.UnitPrice
+        };
+
+        order.AddItem(item);
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await repository.UpdateAsync(order, ct);
+        await repository.SaveChangesAsync(ct);
+
+        var dto = new OrderDto(
+            order.Id,
+            order.CustomerId,
+            order.OrderNumber,
+            order.OrderDate,
+            order.Status.ToString(),
+            order.TotalAmount,
+            order.Items.Select(i => new OrderItemDto(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList(),
+            order.CreatedAt,
+            order.UpdatedAt
+        );
+
+        return Result<OrderDto>.Success(dto);
+    }
+}
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/DeleteOrderItemCommand.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public record DeleteOrderItemCommand(int OrderId, int OrderItemId) : ICommand<Result<OrderDto>>;
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Commands/DeleteOrderItemHandler.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+using Nimble.Modulith.Customers.Domain.Interfaces;
+using Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+public class DeleteOrderItemHandler(IRepository<Order> repository) 
+    : ICommandHandler<DeleteOrderItemCommand, Result<OrderDto>>
+{
+    public async ValueTask<Result<OrderDto>> Handle(DeleteOrderItemCommand command, CancellationToken ct)
+    {
+        var order = await repository.GetByIdAsync(command.OrderId, ct);
+
+        if (order is null)
+        {
+            return Result<OrderDto>.NotFound("Order not found");
+        }
+
+        var item = order.Items.FirstOrDefault(i => i.Id == command.OrderItemId);
+        if (item is null)
+        {
+            return Result<OrderDto>.NotFound("Order item not found");
+        }
+
+        order.RemoveItem(item);
+        order.UpdatedAt = DateTime.UtcNow;
+
+        await repository.UpdateAsync(order, ct);
+        await repository.SaveChangesAsync(ct);
+
+        var dto = new OrderDto(
+            order.Id,
+            order.CustomerId,
+            order.OrderNumber,
+            order.OrderDate,
+            order.Status.ToString(),
+            order.TotalAmount,
+            order.Items.Select(i => new OrderItemDto(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList(),
+            order.CreatedAt,
+            order.UpdatedAt
+        );
+
+        return Result<OrderDto>.Success(dto);
+    }
+}
+```
+
+### 3. Create Order Queries
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Queries/GetOrderByIdQuery.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+public record GetOrderByIdQuery(int Id) : IQuery<Result<OrderDto>>;
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Queries/GetOrderByIdHandler.cs`:
+
+```csharp
+using Ardalis.Result;
+using Ardalis.Specification;
+using Mediator;
+using Nimble.Modulith.Customers.Domain.Interfaces;
+using Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+public class GetOrderByIdHandler(IReadRepository<Order> repository) 
+    : IQueryHandler<GetOrderByIdQuery, Result<OrderDto>>
+{
+    public async ValueTask<Result<OrderDto>> Handle(GetOrderByIdQuery query, CancellationToken ct)
+    {
+        var spec = new OrderByIdSpec(query.Id);
+        var order = await repository.FirstOrDefaultAsync(spec, ct);
+
+        if (order is null)
+        {
+            return Result<OrderDto>.NotFound();
+        }
+
+        var dto = new OrderDto(
+            order.Id,
+            order.CustomerId,
+            order.OrderNumber,
+            order.OrderDate,
+            order.Status.ToString(),
+            order.TotalAmount,
+            order.Items.Select(i => new OrderItemDto(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList(),
+            order.CreatedAt,
+            order.UpdatedAt
+        );
+
+        return Result<OrderDto>.Success(dto);
+    }
+}
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Queries/ListOrdersByDateQuery.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+public record ListOrdersByDateQuery(DateOnly OrderDate) : IQuery<Result<List<OrderDto>>>;
+```
+
+Create `Nimble.Modulith.Customers/UseCases/Orders/Queries/ListOrdersByDateHandler.cs`:
+
+```csharp
+using Ardalis.Result;
+using Mediator;
+using Nimble.Modulith.Customers.Domain.Interfaces;
+using Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+namespace Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+public class ListOrdersByDateHandler(IReadRepository<Order> repository) 
+    : IQueryHandler<ListOrdersByDateQuery, Result<List<OrderDto>>>
+{
+    public async ValueTask<Result<List<OrderDto>>> Handle(ListOrdersByDateQuery query, CancellationToken ct)
+    {
+        var spec = new OrdersByDateSpec(query.OrderDate);
+        var orders = await repository.ListAsync(spec, ct);
+
+        var dtos = orders.Select(order => new OrderDto(
+            order.Id,
+            order.CustomerId,
+            order.OrderNumber,
+            order.OrderDate,
+            order.Status.ToString(),
+            order.TotalAmount,
+            order.Items.Select(i => new OrderItemDto(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList(),
+            order.CreatedAt,
+            order.UpdatedAt
+        )).ToList();
+
+        return Result<List<OrderDto>>.Success(dtos);
+    }
+}
+```
+
+We'll also need to add the specification for querying orders by date. Create `Nimble.Modulith.Customers/Domain/OrderAggregate/OrdersByDateSpec.cs`:
+
+```csharp
+using Ardalis.Specification;
+
+namespace Nimble.Modulith.Customers.Domain.OrderAggregate;
+
+public class OrdersByDateSpec : Specification<Order>
+{
+    public OrdersByDateSpec(DateOnly orderDate)
+    {
+        Query
+            .Where(o => o.OrderDate == orderDate)
+            .Include(o => o.Items)
+            .OrderBy(o => o.CreatedAt);
+    }
+}
+```
+
+## Create Order Endpoints
+
+### 1. Create Order Endpoint DTOs
 
 Create `Nimble.Modulith.Customers/Endpoints/Orders/OrderResponse.cs`:
 
@@ -1436,7 +1542,7 @@ public record OrderResponse(
     int Id,
     int CustomerId,
     string OrderNumber,
-    DateTime OrderDate,
+    DateOnly OrderDate,
     string Status,
     decimal TotalAmount,
     List<OrderItemResponse> Items
@@ -1453,6 +1559,7 @@ public record OrderItemResponse(
 
 public record CreateOrderRequest(
     int CustomerId,
+    DateOnly OrderDate,
     List<CreateOrderItemRequest> Items
 );
 
@@ -1462,9 +1569,331 @@ public record CreateOrderItemRequest(
     int Quantity,
     decimal UnitPrice
 );
+
+public record AddOrderItemRequest(
+    int ProductId,
+    string ProductName,
+    int Quantity,
+    decimal UnitPrice
+);
 ```
 
-The Create Order Command, Handler, and Endpoint would follow the same Mediator pattern shown in the Customer examples above, mapping from Endpoint Request → Command → Handler (returns Result<UseCasesDto>) → Endpoint Response.
+### 2. Create Order Endpoint
+
+Create `Nimble.Modulith.Customers/Endpoints/Orders/Create.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class Create(IMediator mediator) : Endpoint<CreateOrderRequest, OrderResponse>
+{
+    public override void Configure()
+    {
+        Post("/orders");
+        AllowAnonymous();
+        Summary(s =>
+        {
+            s.Summary = "Create a new order";
+            s.Description = "Creates a new order with the provided items";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CreateOrderRequest req, CancellationToken ct)
+    {
+        var command = new CreateOrderCommand(
+            req.CustomerId,
+            req.OrderDate,
+            req.Items.Select(i => new CreateOrderItemDto(
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice
+            )).ToList()
+        );
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        await Send.CreatedAtAsync<GetById>(
+            new { id = result.Value.Id },
+            new OrderResponse(
+                result.Value.Id,
+                result.Value.CustomerId,
+                result.Value.OrderNumber,
+                result.Value.OrderDate,
+                result.Value.Status,
+                result.Value.TotalAmount,
+                result.Value.Items.Select(i => new OrderItemResponse(
+                    i.Id,
+                    i.ProductId,
+                    i.ProductName,
+                    i.Quantity,
+                    i.UnitPrice,
+                    i.TotalPrice
+                )).ToList()
+            ),
+            generateAbsoluteUrl: false,
+            cancellation: ct
+        );
+    }
+}
+```
+
+### 3. Add Order Item Endpoint
+
+Create `Nimble.Modulith.Customers/Endpoints/Orders/AddItem.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class AddItem(IMediator mediator) : Endpoint<AddOrderItemRequest, OrderResponse>
+{
+    public override void Configure()
+    {
+        Post("/orders/{id}/items");
+        AllowAnonymous();
+        Summary(s =>
+        {
+            s.Summary = "Add an item to an order";
+            s.Description = "Adds a new item to an existing order";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(AddOrderItemRequest req, CancellationToken ct)
+    {
+        var orderId = Route<int>("id");
+        var command = new AddOrderItemCommand(
+            orderId,
+            req.ProductId,
+            req.ProductName,
+            req.Quantity,
+            req.UnitPrice
+        );
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        Response = new OrderResponse(
+            result.Value.Id,
+            result.Value.CustomerId,
+            result.Value.OrderNumber,
+            result.Value.OrderDate,
+            result.Value.Status,
+            result.Value.TotalAmount,
+            result.Value.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        );
+    }
+}
+```
+
+### 4. Delete Order Item Endpoint
+
+Create `Nimble.Modulith.Customers/Endpoints/Orders/DeleteItem.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class DeleteItem(IMediator mediator) : EndpointWithoutRequest<OrderResponse>
+{
+    public override void Configure()
+    {
+        Delete("/orders/{id}/items/{itemId}");
+        AllowAnonymous();
+        Summary(s =>
+        {
+            s.Summary = "Delete an item from an order";
+            s.Description = "Removes an item from an existing order";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CancellationToken ct)
+    {
+        var orderId = Route<int>("id");
+        var itemId = Route<int>("itemId");
+        var command = new DeleteOrderItemCommand(orderId, itemId);
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        Response = new OrderResponse(
+            result.Value.Id,
+            result.Value.CustomerId,
+            result.Value.OrderNumber,
+            result.Value.OrderDate,
+            result.Value.Status,
+            result.Value.TotalAmount,
+            result.Value.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        );
+    }
+}
+```
+
+### 5. Get Order By ID Endpoint
+
+Create `Nimble.Modulith.Customers/Endpoints/Orders/GetById.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class GetById(IMediator mediator) : EndpointWithoutRequest<OrderResponse>
+{
+    public override void Configure()
+    {
+        Get("/orders/{id}");
+        AllowAnonymous();
+        Summary(s =>
+        {
+            s.Summary = "Get an order by ID";
+            s.Description = "Returns a single order with all its items";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CancellationToken ct)
+    {
+        var id = Route<int>("id");
+        var query = new GetOrderByIdQuery(id);
+        var result = await mediator.Send(query, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        Response = new OrderResponse(
+            result.Value.Id,
+            result.Value.CustomerId,
+            result.Value.OrderNumber,
+            result.Value.OrderDate,
+            result.Value.Status,
+            result.Value.TotalAmount,
+            result.Value.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        );
+    }
+}
+```
+
+### 6. List Orders By Date Endpoint
+
+Create `Nimble.Modulith.Customers/Endpoints/Orders/ListByDate.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class ListByDate(IMediator mediator) : EndpointWithoutRequest<List<OrderResponse>>
+{
+    public override void Configure()
+    {
+        Get("/orders/by-date/{date}");
+        AllowAnonymous();
+        Summary(s =>
+        {
+            s.Summary = "List orders by date";
+            s.Description = "Returns all orders created on the specified date";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CancellationToken ct)
+    {
+        var dateString = Route<string>("date");
+        if (!DateOnly.TryParse(dateString, out var date))
+        {
+            await SendErrorsAsync(cancellation: ct);
+            return;
+        }
+
+        var query = new ListOrdersByDateQuery(date);
+        var result = await mediator.Send(query, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        Response = result.Value.Select(o => new OrderResponse(
+            o.Id,
+            o.CustomerId,
+            o.OrderNumber,
+            o.OrderDate,
+            o.Status,
+            o.TotalAmount,
+            o.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        )).ToList();
+    }
+}
+```
 
 ## Create Module Extensions
 
@@ -1636,25 +2065,6 @@ GET {{Nimble.Modulith.Web_HostAddress}}/customers
 ### Get Customer by ID
 GET {{Nimble.Modulith.Web_HostAddress}}/customers/1
 
-### Update Customer
-PUT {{Nimble.Modulith.Web_HostAddress}}/customers/1
-Content-Type: application/json
-{
-  "firstName": "John",
-  "lastName": "Doe",
-  "phoneNumber": "+1-555-9999",
-  "address": {
-    "street": "456 Oak Ave",
-    "city": "Los Angeles",
-    "state": "CA",
-    "postalCode": "90001",
-    "country": "USA"
-  }
-}
-
-### Delete Customer
-DELETE {{Nimble.Modulith.Web_HostAddress}}/customers/1
-
 ### Orders Module Tests
 
 ### Create an Order
@@ -1662,6 +2072,7 @@ POST {{Nimble.Modulith.Web_HostAddress}}/orders
 Content-Type: application/json
 {
   "customerId": 1,
+  "orderDate": "2025-10-24",
   "items": [
     {
       "productId": 1,
@@ -1678,14 +2089,24 @@ Content-Type: application/json
   ]
 }
 
-### List All Orders
-GET {{Nimble.Modulith.Web_HostAddress}}/orders
+### Add Item to Order
+POST {{Nimble.Modulith.Web_HostAddress}}/orders/1/items
+Content-Type: application/json
+{
+  "productId": 3,
+  "productName": "Third Product",
+  "quantity": 1,
+  "unitPrice": 15.99
+}
+
+### Delete Item from Order
+DELETE {{Nimble.Modulith.Web_HostAddress}}/orders/1/items/2
 
 ### Get Order by ID
 GET {{Nimble.Modulith.Web_HostAddress}}/orders/1
 
-### Get Orders by Customer
-GET {{Nimble.Modulith.Web_HostAddress}}/customers/1/orders
+### List Orders by Date
+GET {{Nimble.Modulith.Web_HostAddress}}/orders/by-date/2025-10-24
 
 ### Update Order Status
 PATCH {{Nimble.Modulith.Web_HostAddress}}/orders/1/status
@@ -1747,8 +2168,8 @@ HTTP Request → Endpoint → Command/Query → Mediator → Handler
 ### What We've Created
 
 The Customers module now has:
-- **Customer Management**: Full CRUD operations for customers with addresses
-- **Order Management**: Create orders with multiple items, track order status
+- **Customer Management**: Create, list, and retrieve customers with addresses
+- **Order Management**: Create orders, manage order items, and query orders by date
 - **Clean Architecture**: Proper separation using folders for domain, use cases, infrastructure, and endpoints
 - **Mediator Pattern**: Decoupled communication between endpoints and business logic
 - **Rich Domain Models**: Entities with behavior, not just data containers
@@ -1760,15 +2181,13 @@ Customer endpoints:
 - **POST /customers** - Create a new customer
 - **GET /customers** - List all customers
 - **GET /customers/{id}** - Get a specific customer
-- **PUT /customers/{id}** - Update a customer
-- **DELETE /customers/{id}** - Delete a customer
 
-Order endpoints (follow same pattern):
-- **POST /orders** - Create a new order
-- **GET /orders** - List all orders
-- **GET /orders/{id}** - Get a specific order
-- **GET /customers/{customerId}/orders** - Get all orders for a customer
-- **PATCH /orders/{id}/status** - Update order status
+Order endpoints:
+- **POST /orders** - Create a new order with items and a specific order date
+- **POST /orders/{id}/items** - Add an item to an existing order
+- **DELETE /orders/{id}/items/{itemId}** - Remove an item from an order
+- **GET /orders/{id}** - Get a specific order with all its items
+- **GET /orders/by-date/{date}** - Get all orders created on a specific date (format: YYYY-MM-DD)
 
 ## Congratulations!
 
@@ -1780,6 +2199,11 @@ You've successfully created a sophisticated Customers and Orders module using Cl
 - Domain-driven design with rich domain models
 - Repository and specification patterns for data access
 - Value objects for type safety
-- Complex business logic with order aggregates
+- Complex business logic with order aggregates and item management
+- DateOnly type for proper date handling
+- **Encapsulated collections** with private backing fields and read-only exposure
+- **Guard clauses** to validate domain operations
+- **Business rules in the domain** such as combining quantities when the same product is added to an order
+- **Calculated properties** like TotalAmount that are always accurate
 
 This architecture scales well and provides a solid foundation for adding more complex business rules and domain logic as your application grows.
