@@ -1,11 +1,8 @@
 # Lab 1: Create a modular monolith solution with one module for Users
 
-In this lab we will create the initial structure of the modular monolith application. You have two options:
+In this lab we will create the initial structure of the modular monolith application. We will mainly use the `dotnet` CLI tool, and you can script the setup once you're comfortable with it to suit your own team/org needs and standards.
 
-1. Create the files from scratch using `dotnet` CLI or your IDE.
-2. Create the files using a `dotnet new` template called `Ardalis.Modulith`.
-
-In either case the resulting solution file should be called `Nimble.Modulith` and should contain five projects when completed:
+When we're done, we will have a solution file called `Nimble.Modulith.slnx` which will contain five projects:
 
 - AspireHost
 - ServiceDefaults
@@ -13,9 +10,9 @@ In either case the resulting solution file should be called `Nimble.Modulith` an
 - Users
 - Users.Contracts
 
-## Option 1: Creating the Solution with dotnet CLI
+## Creating the Solution with dotnet CLI
 
-Follow these steps to create the modular monolith solution from scratch:
+Follow these steps to create the modular monolith solution from scratch. You can do this in a folder called `labs` (which is in the .gitignore file and so won't be added to git by default). If you want source control, create a new repo or use a subfolder called `mylabs` which should be tracked by git.
 
 ### 1. Create the solution file
 
@@ -100,17 +97,29 @@ dotnet sln list
 
 You should see all 5 projects. If not you can use `dotnet sln add <csproj path>` to add any that are missing.
 
-Add the Aspire projects to the `_Host` solution folder:
+Move the Aspire projects to the `_Host` solution folder:
 
 ```bash
+dotnet sln remove Nimble.Modulith.AppHost/Nimble.Modulith.AppHost.csproj
 dotnet sln add Nimble.Modulith.AppHost/Nimble.Modulith.AppHost.csproj --solution-folder "_Host"
+dotnet sln remove Nimble.Modulith.ServiceDefaults/Nimble.Modulith.ServiceDefaults.csproj
 dotnet sln add Nimble.Modulith.ServiceDefaults/Nimble.Modulith.ServiceDefaults.csproj --solution-folder "_Host"
 ```
 
-### 9. Ensure all projects target .NET 10
+This will change the default startup project. When you open in an IDE you'll need to set AppHost as the startup project manually.
+
+### 9. Use Central Package Management
+
+We're going to have a lot of projects. We don't want to have different package versions all over the place. Run this from the folder with the slnx file. We're going to use this tool to help: [CentralizedPackageConverter](https://github.com/Webreaper/CentralisedPackageConverter)
+
+```bash
+ dotnet tool install -g CentralisedPackageConverter
+ central-pkg-converter .
+```
+
+### 10. Ensure all projects target .NET 10
 
 The Aspire projects created by `aspire new` may target a different framework version. Use a central `Directory.Build.props` file to set the .NET version and remove the `<TargetFramework>net9.0</TargetFramework>` element from the two Aspire projects.
-
 
 ```bash
 dotnet new buildprops
@@ -155,20 +164,37 @@ You may want to update the default namespaces in the Users projects:
 
 Or simply delete the generated `Class1.cs` files and create your own classes as needed.
 
-### Verify the solution
+### 12. Add Directory files to Solution Folder
 
-After completing these steps, you can verify your solution structure:
+Now we'll make sure we can see the Directory.Build.props and Directory.Packages.props files in our solution in VS2026 (or your IDE of choice). Open the Nimble.Modulith.slnx file and add this at the top:
 
-```bash
-dotnet sln list
+```xml
+<Folder Name="/__SolutionItems/">
+  <File Path="Directory.Build.props" />
+  <File Path="Directory.Packages.props" />
+</Folder>
 ```
 
-This should show all five projects with the Users projects organized under the "Users Module" solution folder.
+The whole thing should look like this:
 
-## Option 2: Creating the Solution with Ardalis.Modulith templates
-
-Install the modulith dotnet new template:
-
-```bash
-dotnet new install Ardalis.Modulith@2.0.0-beta3
+```xml
+<Solution>
+  <Folder Name="/__SolutionItems/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+  </Folder>
+  <Folder Name="/Users Module/">
+    <Project Path="Nimble.Modulith.Users.Contracts/Nimble.Modulith.Users.Contracts.csproj" />
+    <Project Path="Nimble.Modulith.Users/Nimble.Modulith.Users.csproj" />
+  </Folder>
+  <Folder Name="/_Host/">
+    <Project Path="Nimble.Modulith.AppHost/Nimble.Modulith.AppHost.csproj" />
+    <Project Path="Nimble.Modulith.ServiceDefaults/Nimble.Modulith.ServiceDefaults.csproj" />
+    <Project Path="Nimble.Modulith.Web/Nimble.Modulith.Web.csproj" />
+  </Folder>
+</Solution>
 ```
+
+## Summary
+
+At this point we have the basics: 2 Aspire projects, a eb host project, and 2 projects that represent our Users module. In the next lab we will configure Aspire to work with the web host and module and get user registration working.
