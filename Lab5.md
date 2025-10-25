@@ -420,8 +420,8 @@ public static class EmailModuleExtensions
     // Configure email settings
     services.Configure<EmailSettings>(configuration.GetSection("Email"));
 
-    // Register email sender
-    services.AddScoped<IEmailSender, SmtpEmailSender>();
+    // Register email sender as singleton (thread-safe, no scoped dependencies)
+    services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
     // Register queue service as singleton (shared across all requests)
     services.AddSingleton(typeof(IQueueService<>), typeof(ChannelQueueService<>));
@@ -550,11 +550,344 @@ The Email module is now complete and ready to handle email sending asynchronousl
 
 ### Step 2: Implement Role-Based Authorization
 
-1. Add roles to the Users module (Admin, Customer)
-2. Implement an endpoint to add a Role to a User
-3. Email the user to let them know they were added to a role; send a command to the email module
+In this step, we'll add role support to the Users module, create an endpoint to assign users to roles, and use domain events to send email notifications when users are added to roles.
+
+#### 2.1: Seed Roles in the Database
+
+We'll use Entity Framework's `IEntityTypeConfiguration<T>` pattern to configure role seeding in a separate configuration file. This keeps our DbContext clean and makes configurations reusable.
+
+Create `Nimble.Modulith.Users/Data/Config/IdentityRoleConfig.cs`:
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace Nimble.Modulith.Users.Data.Config;
+
+public class IdentityRoleConfig : IEntityTypeConfiguration<IdentityRole>
+{
+  public void Configure(EntityTypeBuilder<IdentityRole> builder)
+  {
+    // Seed Admin and Customer roles
+    builder.HasData(
+      new IdentityRole
+      {
+        Id = Guid.NewGuid().ToString(),
+        Name = "Admin",
+        NormalizedName = "ADMIN",
+        ConcurrencyStamp = Guid.NewGuid().ToString()
+      },
+      new IdentityRole
+      {
+        Id = Guid.NewGuid().ToString(),
+        Name = "Customer",
+        NormalizedName = "CUSTOMER",
+        ConcurrencyStamp = Guid.NewGuid().ToString()
+      }
+    );
+  }
+}
+```
+
+Update `Nimble.Modulith.Users/Data/UsersDbContext.cs` to auto-discover all entity configurations:
+
+```csharp
+protected override void OnModelCreating(ModelBuilder builder)
+{
+  base.OnModelCreating(builder);
+  
+  // Apply Users module specific configurations
+  builder.HasDefaultSchema("Users");
+  
+  // Auto-discover and apply all IEntityTypeConfiguration<T> from this assembly
+  builder.ApplyConfigurationsFromAssembly(typeof(UsersDbContext).Assembly);
+}
+```
+
+**Key Points:**
+- **Separation of Concerns:** Configuration is separated from the DbContext into dedicated files
+- **Auto-Discovery:** `ApplyConfigurationsFromAssembly` automatically finds and applies all `IEntityTypeConfiguration<T>` implementations
+- **Reference by Name:** Other modules reference roles by name ("Admin", "Customer") rather than by ID
+- **Generated IDs:** Role IDs are generated automatically; only the names are important
+- **Scalability:** As you add more entity configurations, they're automatically picked up
+
+#### 2.2: Create a Design-Time DbContext Factory
+
+EF Core migrations require a way to create the DbContext at design time. Create `Nimble.Modulith.Users/Data/UsersDbContextFactory.cs`:
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Design;
+
+namespace Nimble.Modulith.Users.Data;
+
+public class UsersDbContextFactory : IDesignTimeDbContextFactory<UsersDbContext>
+{
+  public UsersDbContext CreateDbContext(string[] args)
+  {
+    var optionsBuilder = new DbContextOptionsBuilder<UsersDbContext>();
+    optionsBuilder.UseSqlServer("Server=(localdb)\\mssqllocaldb;Database=NimbleModulith;Trusted_Connection=True;MultipleActiveResultSets=true");
+
+    return new UsersDbContext(optionsBuilder.Options);
+  }
+}
+```
+
+#### 2.3: Create the Migration
+
+Generate an EF Core migration to add the role seeding:
+
+```powershell
+cd Nimble.Modulith.Users
+dotnet ef migrations add SeedRoles --context UsersDbContext --output-dir Data/Migrations
+```
+
+This creates a migration that will insert the Admin and Customer roles when the database is updated.
+
+#### 2.4: Add a Reference to Email.Contracts
+
+The Users module needs to send email commands, so add a reference to the Email.Contracts project:
+
+```powershell
+cd Nimble.Modulith.Users
+dotnet add reference ../Nimble.Modulith.Email.Contracts/Nimble.Modulith.Email.Contracts.csproj
+```
+
+#### 2.5: Create the Domain Event
+
+Domain events allow modules to communicate without tight coupling. Create `Nimble.Modulith.Users/Events/UserAddedToRoleEvent.cs`:
+
+```csharp
+using Mediator;
+
+namespace Nimble.Modulith.Users.Events;
+
+public record UserAddedToRoleEvent(
+  string UserId,
+  string UserEmail,
+  string RoleName) : INotification;
+```
+
+**Architecture Note:** This event implements `INotification` from Mediator, which allows multiple handlers to respond to it.
+
+#### 2.6: Create the Event Handler
+
+Create `Nimble.Modulith.Users/Events/UserAddedToRoleEventHandler.cs` to send an email when a user is added to a role:
+
+```csharp
+using Mediator;
+using Microsoft.Extensions.Logging;
+using Nimble.Modulith.Email.Contracts;
+
+namespace Nimble.Modulith.Users.Events;
+
+public class UserAddedToRoleEventHandler : INotificationHandler<UserAddedToRoleEvent>
+{
+  private readonly IMediator _mediator;
+  private readonly ILogger<UserAddedToRoleEventHandler> _logger;
+
+  public UserAddedToRoleEventHandler(
+    IMediator mediator,
+    ILogger<UserAddedToRoleEventHandler> logger)
+  {
+    _mediator = mediator;
+    _logger = logger;
+  }
+
+  public async ValueTask Handle(UserAddedToRoleEvent notification, CancellationToken cancellationToken)
+  {
+    _logger.LogInformation(
+      "User {UserId} was added to role {RoleName}, sending email notification",
+      notification.UserId,
+      notification.RoleName);
+
+    var emailCommand = new SendEmailCommand(
+      To: notification.UserEmail,
+      Subject: $"You've been added to the {notification.RoleName} role",
+      Body: $"Hello,\n\nYou have been added to the {notification.RoleName} role in the Nimble Modulith application.\n\nBest regards,\nThe Nimble Team"
+    );
+
+    await _mediator.Send(emailCommand, cancellationToken);
+
+    _logger.LogInformation("Email notification sent to {Email}", notification.UserEmail);
+  }
+}
+```
+
+#### 2.7: Create the AddRoleToUser Endpoint
+
+Create `Nimble.Modulith.Users/Endpoints/AddRoleToUser.cs`:
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Microsoft.AspNetCore.Identity;
+using Nimble.Modulith.Users.Events;
+
+namespace Nimble.Modulith.Users.Endpoints;
+
+public class AddRoleToUserRequest
+{
+  public string RoleName { get; set; } = string.Empty;
+}
+
+public class AddRoleToUserResponse
+{
+  public string Message { get; set; } = string.Empty;
+}
+
+public class AddRoleToUser : Endpoint<AddRoleToUserRequest, AddRoleToUserResponse>
+{
+  private readonly UserManager<IdentityUser> _userManager;
+  private readonly RoleManager<IdentityRole> _roleManager;
+  private readonly IMediator _mediator;
+
+  public AddRoleToUser(
+    UserManager<IdentityUser> userManager,
+    RoleManager<IdentityRole> roleManager,
+    IMediator mediator)
+  {
+    _userManager = userManager;
+    _roleManager = roleManager;
+    _mediator = mediator;
+  }
+
+  public override void Configure()
+  {
+    Post("/users/{id}/roles");
+    AllowAnonymous(); // TODO: Change to require Admin role
+  }
+
+  public override async Task HandleAsync(AddRoleToUserRequest req, CancellationToken ct)
+  {
+    var userId = Route<string>("id")!;
+
+    // Find the user
+    var user = await _userManager.FindByIdAsync(userId);
+    if (user == null)
+    {
+      AddError($"User with ID '{userId}' not found");
+      await Send.ErrorsAsync(cancellation: ct);
+      return;
+    }
+
+    // Normalize the role name (handle "admin" -> "Admin")
+    var normalizedRoleName = char.ToUpper(req.RoleName[0]) + req.RoleName.Substring(1).ToLower();
+
+    // Check if the role exists (only Admin and Customer are valid)
+    if (normalizedRoleName != "Admin" && normalizedRoleName != "Customer")
+    {
+      AddError($"Role '{normalizedRoleName}' does not exist. Valid roles are: Admin, Customer");
+      await Send.ErrorsAsync(cancellation: ct);
+      return;
+    }
+
+    // Check if user is already in the role
+    if (await _userManager.IsInRoleAsync(user, normalizedRoleName))
+    {
+      AddError($"User is already in the '{normalizedRoleName}' role");
+      await Send.ErrorsAsync(cancellation: ct);
+      return;
+    }
+
+    // Add the user to the role
+    var result = await _userManager.AddToRoleAsync(user, normalizedRoleName);
+    if (!result.Succeeded)
+    {
+      foreach (var error in result.Errors)
+      {
+        AddError(error.Description);
+      }
+      await Send.ErrorsAsync(cancellation: ct);
+      return;
+    }
+
+    // Publish domain event for email notification
+    var userAddedEvent = new UserAddedToRoleEvent(
+      UserId: user.Id,
+      UserEmail: user.Email!,
+      RoleName: normalizedRoleName
+    );
+
+    await _mediator.Publish(userAddedEvent, ct);
+
+    // Send success response
+    Response.Message = $"User '{user.Email}' successfully added to role '{normalizedRoleName}'";
+  }
+}
+```
+
+**Key Implementation Details:**
+
+1. **Role Normalization:** Handles case-insensitive role names (e.g., "admin" → "Admin")
+2. **Validation:** Checks if user exists, role is valid, and user isn't already in the role
+3. **Error Handling:** Uses FastEndpoints pattern: `AddError()` followed by `Send.ErrorsAsync()`
+4. **Domain Event:** Publishes `UserAddedToRoleEvent` after successful role assignment
+5. **Async Flow:** Event → Handler → Email Command → Queue → Background Worker → SMTP
+
+#### 2.8: Test the Implementation
+
+1. **Start the application** via the Aspire AppHost:
+   ```powershell
+   cd Nimble.Modulith.AppHost
+   dotnet run
+   ```
+
+2. **Register a new user** via POST to `/register`:
+   ```json
+   {
+     "email": "testuser@example.com",
+     "password": "Test123!"
+   }
+   ```
+
+3. **Add the user to the Admin role** via POST to `/users/{userId}/roles`:
+   ```json
+   {
+     "roleName": "admin"
+   }
+   ```
+
+4. **Check Papercut UI** at `http://localhost:37408` to see the email notification
+
+**Expected Email:**
+- **To:** testuser@example.com
+- **Subject:** You've been added to the Admin role
+- **Body:** Notification message about role assignment
+
+#### 2.9: Understanding the Domain Event Pattern
+
+The architecture we've implemented demonstrates several important patterns:
+
+**1. Domain Events for Loose Coupling:**
+- The `AddRoleToUser` endpoint doesn't know about email sending
+- It publishes an event describing what happened
+- Any number of handlers can respond to the event independently
+
+**2. Mediator Auto-Discovery:**
+- Handlers implementing `INotificationHandler<T>` are automatically discovered
+- No manual registration required in `UsersModuleExtensions`
+- Simplifies adding new event handlers
+
+**3. Async Email Processing:**
+- Event handler sends `SendEmailCommand`
+- Command handler enqueues email to `Channel<T>` queue
+- Background worker dequeues and sends via SMTP
+- Request completes immediately without waiting for email delivery
+
+**4. Cross-Module Communication:**
+- Users module references only `Email.Contracts` (not Email implementation)
+- Maintains module boundaries while enabling communication
+- Email module implementation can change without affecting Users module
+
+#### 2.10: Next Steps
+
+The remaining items in Step 2:
 4. Update Product endpoints to require Admin role
 5. Update Customer and Order endpoints with appropriate authorization
+
+These will be completed in subsequent parts of the lab.
 
 ### Step 3: Fix Order Pricing
 
