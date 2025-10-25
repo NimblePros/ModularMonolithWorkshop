@@ -881,55 +881,644 @@ The architecture we've implemented demonstrates several important patterns:
 - Maintains module boundaries while enabling communication
 - Email module implementation can change without affecting Users module
 
-#### 2.10: Next Steps
+#### 2.10: Secure Product Endpoints with Admin Role
 
-The remaining items in Step 2:
-4. Update Product endpoints to require Admin role
-5. Update Customer and Order endpoints with appropriate authorization
+Product management operations (create, update, delete) should only be accessible to users with the Admin role. FastEndpoints makes this simple with the `Roles()` method.
 
-These will be completed in subsequent parts of the lab.
+Update the following Product endpoints to require the Admin role:
 
-### Step 3: Fix Order Pricing
+**`Nimble.Modulith.Products/Endpoints/Create.cs`:**
 
-1. Create a contract in Products.Contracts for getting product pricing
-2. Implement a handler in the Products module to return product prices
-3. Update the Order creation logic to fetch prices from Products module
-4. Remove price parameters from Order-related endpoints and commands
-5. Add an endpoint to confirm an Order; it should change the Order status to Processing.
-5. Email the user when their Order has been placed/confirmed (send command to email module)
-6. Raise an OrderCreatedEvent, which should be defined in the Customers.Contracts project, and should include details on the Order and all of its Items (Product Ids, Quantities, and Amounts).
+```csharp
+public override void Configure()
+{
+    Post("/products");
+    Tags("products");
+    Roles("Admin"); // Add this line
+    Summary(s =>
+    {
+        s.Summary = "Create a new product";
+        s.Description = "Creates a new product with a name and description";
+    });
+}
+```
 
-### Step 4: Implement Password Generation
+**`Nimble.Modulith.Products/Endpoints/Update.cs`:**
 
-1. Add a password generation utility
-2. Update Customer creation to generate a random password
-3. Store the password securely using Identity's password hasher
-4. Send the generated password via email (command to email module)
+```csharp
+public override void Configure()
+{
+    Put("/products/{id}");
+    Tags("products");
+    Roles("Admin"); // Add this line
+    Summary(s =>
+    {
+        s.Summary = "Update a product";
+        s.Description = "Updates an existing product's name and description";
+    });
+}
+```
 
-### Step 5: Implement Password Reset
+**`Nimble.Modulith.Products/Endpoints/Delete.cs`:**
 
-1. Create a password reset endpoint
-2. Generate a new random password
-3. Update the user's password
-4. Email the new password to the user (command to email module)
+```csharp
+public override void Configure()
+{
+    Delete("/products/{id}");
+    Tags("products");
+    Roles("Admin"); // Add this line
+    Summary(s =>
+    {
+        s.Summary = "Delete a product";
+        s.Description = "Deletes a product by its ID";
+    });
+}
+```
 
-## Success Criteria
+**Testing Product Authorization:**
+
+1. Register a new user and add them to the Admin role (as demonstrated in section 2.8)
+2. Login to get a cookie/JWT token
+3. Try to create/update/delete a product without the token → Should get 401 Unauthorized
+4. Try with a user who doesn't have Admin role → Should get 403 Forbidden
+5. Try with a user who has Admin role → Should succeed
+
+#### 2.11: Create Customer Authorization Service
+
+Customer and Order endpoints require more complex authorization logic:
+- **Admins** can create/view customers and orders for any user
+- **Regular users** can only create/access their own customer records and orders
+- **Anonymous users** cannot access these endpoints
+
+Instead of duplicating the "Admin OR Owner" authorization logic in every endpoint, we'll create a reusable authorization service.
+
+**Note:** When an endpoint doesn't call `AllowAnonymous()`, FastEndpoints automatically requires authentication. We don't need to manually check `User.Identity?.IsAuthenticated`.
+
+**Create `Nimble.Modulith.Customers/Infrastructure/CustomerAuthorizationService.cs`:**
+
+```csharp
+using System.Security.Claims;
+
+namespace Nimble.Modulith.Customers.Infrastructure;
+
+public interface ICustomerAuthorizationService
+{
+    bool IsAdminOrOwner(ClaimsPrincipal user, string customerEmail);
+}
+
+public class CustomerAuthorizationService : ICustomerAuthorizationService
+{
+    public bool IsAdminOrOwner(ClaimsPrincipal user, string customerEmail)
+    {
+        // Check if user is Admin
+        if (user.IsInRole("Admin"))
+        {
+            return true;
+        }
+
+        // Check if user owns the customer record (matching email)
+        var userEmail = user.FindFirst(ClaimTypes.Email)?.Value
+                     ?? user.Identity?.Name
+                     ?? string.Empty;
+
+        return string.Equals(userEmail, customerEmail, StringComparison.OrdinalIgnoreCase);
+    }
+}
+```
+
+**Register the service in `Nimble.Modulith.Customers/CustomersModuleExtensions.cs`:**
+
+```csharp
+using Nimble.Modulith.Customers.Infrastructure;
+// ... other usings
+
+public static IHostApplicationBuilder AddCustomersModuleServices(
+    this IHostApplicationBuilder builder,
+    ILogger logger)
+{
+    // Add SQL Server DbContext with Aspire
+    builder.AddSqlServerDbContext<CustomersDbContext>("customersdb");
+
+    // Register repositories
+    builder.Services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
+    builder.Services.AddScoped(typeof(IReadRepository<>), typeof(EfReadRepository<>));
+
+    // Register authorization service
+    builder.Services.AddScoped<ICustomerAuthorizationService, CustomerAuthorizationService>();
+
+    logger.Information("{Module} module services registered", nameof(CustomersModuleExtensions).Replace("ModuleExtensions", ""));
+
+    return builder;
+}
+```
+
+#### 2.12: Update Customer Endpoints
+
+Now update the Customer endpoints to use the authorization service.
+
+**`Nimble.Modulith.Customers/Endpoints/Customers/Create.cs`:**
+
+```csharp
+using Ardalis.Result;
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.Infrastructure;
+using Nimble.Modulith.Customers.UseCases.Customers;
+using Nimble.Modulith.Customers.UseCases.Customers.Commands;
+
+namespace Nimble.Modulith.Customers.Endpoints.Customers;
+
+public class Create(IMediator mediator, ICustomerAuthorizationService authService) : Endpoint<CreateCustomerRequest, CustomerResponse>
+{
+    public override void Configure()
+    {
+        Post("/customers");
+        // Require authentication - removed AllowAnonymous()
+        Summary(s =>
+        {
+            s.Summary = "Create a new customer";
+            s.Description = "Creates a new customer with the provided information";
+        });
+        Tags("customers");
+    }
+
+    public override async Task HandleAsync(CreateCustomerRequest req, CancellationToken ct)
+    {
+        // Check if user is Admin or creating customer for themselves
+        if (!authService.IsAdminOrOwner(User, req.Email))
+        {
+            AddError("You can only create a customer record for your own email address");
+            await Send.ErrorsAsync(statusCode: 403, cancellation: ct);
+            return;
+        }
+
+        var command = new CreateCustomerCommand(
+            req.FirstName,
+            req.LastName,
+            req.Email,
+            req.PhoneNumber,
+            req.Address.Street,
+            req.Address.City,
+            req.Address.State,
+            req.Address.PostalCode,
+            req.Address.Country
+        );
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.Status == ResultStatus.Invalid)
+            {
+                foreach (var error in result.ValidationErrors)
+                {
+                    AddError(error.ErrorMessage);
+                }
+                await Send.ErrorsAsync(cancellation: ct);
+                return;
+            }
+
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        Response = new CustomerResponse(
+            result.Value.Id,
+            result.Value.FirstName,
+            result.Value.LastName,
+            result.Value.Email,
+            result.Value.PhoneNumber,
+            new AddressResponse(
+                result.Value.Address.Street,
+                result.Value.Address.City,
+                result.Value.Address.State,
+                result.Value.Address.PostalCode,
+                result.Value.Address.Country
+            )
+        );
+
+        await Send.CreatedAtAsync<GetById>(new { id = result.Value.Id }, generateAbsoluteUrl: false, cancellation: ct);
+    }
+}
+```
+
+**`Nimble.Modulith.Customers/Endpoints/Customers/GetById.cs`:**
+
+Update to inject and use the authorization service:
+
+```csharp
+using Ardalis.Result;
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.Infrastructure;
+using Nimble.Modulith.Customers.UseCases.Customers.Queries;
+
+namespace Nimble.Modulith.Customers.Endpoints.Customers;
+
+public class GetById(IMediator mediator, ICustomerAuthorizationService authService) : EndpointWithoutRequest<CustomerResponse>
+{
+    public override void Configure()
+    {
+        Get("/customers/{id}");
+        // Require authentication - removed AllowAnonymous()
+        Summary(s =>
+        {
+            s.Summary = "Get a customer by ID";
+            s.Description = "Returns a single customer by their ID";
+        });
+        Tags("customers");
+    }
+
+    public override async Task HandleAsync(CancellationToken ct)
+    {
+        var id = Route<int>("id");
+        var query = new GetCustomerByIdQuery(id);
+        var result = await mediator.Send(query, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Check if user is Admin or viewing their own customer record
+        if (!authService.IsAdminOrOwner(User, result.Value.Email))
+        {
+            AddError("You can only view your own customer record");
+            await Send.ErrorsAsync(statusCode: 403, cancellation: ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        Response = new CustomerResponse(
+            result.Value.Id,
+            result.Value.FirstName,
+            result.Value.LastName,
+            result.Value.Email,
+            result.Value.PhoneNumber,
+            new AddressResponse(
+                result.Value.Address.Street,
+                result.Value.Address.City,
+                result.Value.Address.State,
+                result.Value.Address.PostalCode,
+                result.Value.Address.Country
+            )
+        );
+    }
+}
+```
+
+**`Nimble.Modulith.Customers/Endpoints/Customers/List.cs`:**
+
+The List endpoint should only be accessible to admins:
+
+```csharp
+public override void Configure()
+{
+    Get("/customers");
+    Roles("Admin"); // Only admins can list all customers
+    Summary(s =>
+    {
+        s.Summary = "List all customers";
+        s.Description = "Retrieves a list of all customers (Admin only)";
+    });
+    Tags("customers");
+}
+```
+
+#### 2.13: Update Order Endpoints
+
+Order endpoints use the same authorization service to validate that users can only access their own orders (or all orders if they're an Admin).
+
+**`Nimble.Modulith.Customers/Endpoints/Orders/Create.cs`:**
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.Infrastructure;
+using Nimble.Modulith.Customers.UseCases.Customers.Queries;
+using Nimble.Modulith.Customers.UseCases.Orders.Commands;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class Create(IMediator mediator, ICustomerAuthorizationService authService) : Endpoint<CreateOrderRequest, OrderResponse>
+{
+    public override void Configure()
+    {
+        Post("/orders");
+        // Require authentication - removed AllowAnonymous()
+        Summary(s =>
+        {
+            s.Summary = "Create a new order";
+            s.Description = "Creates a new order with the provided items";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CreateOrderRequest req, CancellationToken ct)
+    {
+        // Verify the customer exists and user has permission to create orders for them
+        var customerQuery = new GetCustomerByIdQuery(req.CustomerId);
+        var customerResult = await mediator.Send(customerQuery, ct);
+
+        if (!customerResult.IsSuccess)
+        {
+            AddError($"Customer with ID {req.CustomerId} not found");
+            await Send.ErrorsAsync(statusCode: 404, cancellation: ct);
+            return;
+        }
+
+        // Check if user is Admin or creating order for their own customer record
+        if (!authService.IsAdminOrOwner(User, customerResult.Value.Email))
+        {
+            AddError("You can only create orders for your own customer record");
+            await Send.ErrorsAsync(statusCode: 403, cancellation: ct);
+            return;
+        }
+
+        var command = new CreateOrderCommand(
+            req.CustomerId,
+            req.OrderDate,
+            req.Items.Select(i => new CreateOrderItemDto(
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice
+            )).ToList()
+        );
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            AddError("Failed to create order");
+            await Send.ErrorsAsync(cancellation: ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        await Send.CreatedAtAsync<GetById>(
+            new { id = result.Value.Id },
+            new OrderResponse(
+                result.Value.Id,
+                result.Value.CustomerId,
+                result.Value.OrderNumber,
+                result.Value.OrderDate,
+                result.Value.Status,
+                result.Value.TotalAmount,
+                result.Value.Items.Select(i => new OrderItemResponse(
+                    i.Id,
+                    i.ProductId,
+                    i.ProductName,
+                    i.Quantity,
+                    i.UnitPrice,
+                    i.TotalPrice
+                )).ToList()
+            ),
+            generateAbsoluteUrl: false,
+            cancellation: ct
+        );
+    }
+}
+```
+
+**`Nimble.Modulith.Customers/Endpoints/Orders/GetById.cs`:**
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.Infrastructure;
+using Nimble.Modulith.Customers.UseCases.Customers.Queries;
+using Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class GetById(IMediator mediator, ICustomerAuthorizationService authService) : EndpointWithoutRequest<OrderResponse>
+{
+    public override void Configure()
+    {
+        Get("/orders/{id}");
+        // Require authentication - removed AllowAnonymous()
+        Summary(s =>
+        {
+            s.Summary = "Get an order by ID";
+            s.Description = "Retrieves order details by its ID";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(CancellationToken ct)
+    {
+        var id = Route<int>("id");
+        var query = new GetOrderByIdQuery(id);
+        var result = await mediator.Send(query, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Verify user has permission to view this order
+        var customerQuery = new GetCustomerByIdQuery(result.Value.CustomerId);
+        var customerResult = await mediator.Send(customerQuery, ct);
+
+        if (customerResult.IsSuccess)
+        {
+            if (!authService.IsAdminOrOwner(User, customerResult.Value.Email))
+            {
+                AddError("You can only view your own orders");
+                await Send.ErrorsAsync(statusCode: 403, cancellation: ct);
+                return;
+            }
+        }
+
+        Response = new OrderResponse(
+            result.Value.Id,
+            result.Value.CustomerId,
+            result.Value.OrderNumber,
+            result.Value.OrderDate,
+            result.Value.Status,
+            result.Value.TotalAmount,
+            result.Value.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        );
+    }
+}
+```
+
+**`Nimble.Modulith.Customers/Endpoints/Orders/AddItem.cs`:**
+
+```csharp
+using FastEndpoints;
+using Mediator;
+using Nimble.Modulith.Customers.Infrastructure;
+using Nimble.Modulith.Customers.UseCases.Customers.Queries;
+using Nimble.Modulith.Customers.UseCases.Orders.Commands;
+using Nimble.Modulith.Customers.UseCases.Orders.Queries;
+
+namespace Nimble.Modulith.Customers.Endpoints.Orders;
+
+public class AddItem(IMediator mediator, ICustomerAuthorizationService authService) : Endpoint<AddOrderItemRequest, OrderResponse>
+{
+    public override void Configure()
+    {
+        Post("/orders/{id}/items");
+        // Require authentication - removed AllowAnonymous()
+        Summary(s =>
+        {
+            s.Summary = "Add an item to an order";
+            s.Description = "Adds a new item to an existing order";
+        });
+        Tags("orders");
+    }
+
+    public override async Task HandleAsync(AddOrderItemRequest req, CancellationToken ct)
+    {
+        var orderId = Route<int>("id");
+
+        // Verify the order exists and get the customer ID
+        var orderQuery = new GetOrderByIdQuery(orderId);
+        var orderResult = await mediator.Send(orderQuery, ct);
+
+        if (!orderResult.IsSuccess)
+        {
+            AddError($"Order with ID {orderId} not found");
+            await Send.ErrorsAsync(statusCode: 404, cancellation: ct);
+            return;
+        }
+
+        // Verify user has permission to modify this order
+        var customerQuery = new GetCustomerByIdQuery(orderResult.Value.CustomerId);
+        var customerResult = await mediator.Send(customerQuery, ct);
+
+        if (customerResult.IsSuccess)
+        {
+            if (!authService.IsAdminOrOwner(User, customerResult.Value.Email))
+            {
+                AddError("You can only modify your own orders");
+                await Send.ErrorsAsync(statusCode: 403, cancellation: ct);
+                return;
+            }
+        }
+
+        var command = new AddOrderItemCommand(
+            orderId,
+            req.ProductId,
+            req.ProductName,
+            req.Quantity,
+            req.UnitPrice
+        );
+
+        var result = await mediator.Send(command, ct);
+
+        if (!result.IsSuccess)
+        {
+            await Send.NotFoundAsync(ct);
+            return;
+        }
+
+        // Map UseCases DTO to Endpoint Response DTO
+        Response = new OrderResponse(
+            result.Value.Id,
+            result.Value.CustomerId,
+            result.Value.OrderNumber,
+            result.Value.OrderDate,
+            result.Value.Status,
+            result.Value.TotalAmount,
+            result.Value.Items.Select(i => new OrderItemResponse(
+                i.Id,
+                i.ProductId,
+                i.ProductName,
+                i.Quantity,
+                i.UnitPrice,
+                i.TotalPrice
+            )).ToList()
+        );
+    }
+}
+```
+
+**`Nimble.Modulith.Customers/Endpoints/Orders/ListByDate.cs`:**
+
+```csharp
+public override void Configure()
+{
+    Get("/orders/by-date/{date}");
+    Roles("Admin"); // Only admins can list all orders
+    Summary(s =>
+    {
+        s.Summary = "List orders by date";
+        s.Description = "Returns all orders created on the specified date (Admin only)";
+    });
+    Tags("orders");
+}
+```
+
+#### 2.14: Update AddRoleToUser Endpoint Authorization
+
+Now that we have role-based authorization working, update the `AddRoleToUser` endpoint to require Admin role:
+
+**`Nimble.Modulith.Users/Endpoints/AddRoleToUser.cs`:**
+
+```csharp
+public override void Configure()
+{
+    Post("/users/{id}/roles");
+    Roles("Admin"); // Only admins can assign roles to users
+}
+```
+
+#### 2.15: Authorization Summary
+
+**Authorization Implementation Patterns:**
+
+1. **Role-Based (Products):** Simple role check using `Roles("Admin")`
+   - Admins can create/update/delete products
+   - All authenticated users can view products
+
+2. **Custom Authorization (Customers/Orders):** Manual checks in endpoint handlers
+   - Admins have full access
+   - Regular users can only access their own records
+   - Uses `User.IsInRole()` and email claim comparison
+
+3. **FastEndpoints Security Features Used:**
+   - `Roles()` method for declarative role-based authorization
+   - `User` property (ClaimsPrincipal) for accessing user identity and claims
+   - `AddError()` and `Send.ErrorsAsync()` for authorization failures
+
+**Key Authentication/Authorization Flow:**
+
+1. User registers → Identity creates user account
+2. User logs in → JWT token/Cookie generated with email claim and roles
+3. User includes token in Authorization header (or Cookie)
+4. ASP.NET middleware validates token/cookie and populates `User` ClaimsPrincipal
+5. FastEndpoints checks `Roles()` requirements
+6. Endpoint handler performs custom authorization checks
+7. Access granted or denied based on role and ownership checks
+
+The following steps will be done in Lab 6:
+
+- Fix Order Pricing
+- Implement User Password Generation
+- Implement Password Reset Emails
+
+## Success Criteria for Lab 5
 
 After completing this lab, you should have:
 
 - ✅ Role-based authorization protecting Products endpoints
 - ✅ Proper authorization on Customer and Order endpoints
-- ✅ Orders that fetch prices from the Products module
-- ✅ Automatic password generation for new customers
-- ✅ Password reset functionality with email notification
 - ✅ A working Email module integrated with the application
 
 ## Notes
 
-- For simplicity new passwords can just be a portion of a GUID
 - In development, we will use Papercut to capture emails sent to localhost port 25
 - In production, we would use a cloud-hosted email service
-- A real app should have password reset tokens with expiration for better security
-
-## Step 1: Create the Email Module
-
