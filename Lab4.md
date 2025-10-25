@@ -513,8 +513,12 @@ public class OrderConfiguration : IEntityTypeConfiguration<Order>
             .IsRequired()
             .HasConversion<string>();
 
-        builder.Property(o => o.TotalAmount)
-            .HasPrecision(18, 2);
+        builder.Property(o => o.Status)
+            .IsRequired()
+            .HasConversion<string>();
+
+        // Ignore TotalAmount - it's a calculated property
+        builder.Ignore(o => o.TotalAmount);
 
         builder.HasMany(o => o.Items)
             .WithOne()
@@ -525,7 +529,7 @@ public class OrderConfiguration : IEntityTypeConfiguration<Order>
 }
 ```
 
-**Note**: The `.Metadata.PrincipalToDependent?.SetField("_items")` configuration tells EF Core to use the private backing field `_items` for the Items collection, which is necessary since we exposed it as `IReadOnlyList<OrderItem>`.
+**Note**: The `.Metadata.PrincipalToDependent?.SetField("_items")` configuration tells EF Core to use the private backing field `_items` for the Items collection, which is necessary since we exposed it as `IReadOnlyList<OrderItem>`. We also use `.Ignore()` for `TotalAmount` since it's a calculated property and should not be persisted to the database.
 
 ### 3. Create OrderItem Configuration
 
@@ -555,9 +559,14 @@ public class OrderItemConfiguration : IEntityTypeConfiguration<OrderItem>
 
         builder.Property(i => i.UnitPrice)
             .HasPrecision(18, 2);
+
+        // Ignore TotalPrice - it's a calculated property
+        builder.Ignore(i => i.TotalPrice);
     }
 }
 ```
+
+**Note**: Like with `Order.TotalAmount`, we use `.Ignore()` for `OrderItem.TotalPrice` since it's calculated as `Quantity * UnitPrice` and doesn't need to be stored in the database.
 
 ## Create Repository Implementations
 
