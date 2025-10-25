@@ -49,6 +49,13 @@ protected override void OnModelCreating(ModelBuilder builder)
 - **NO manual registration** required in module extensions
 - Commands/Queries live in `.Contracts` projects
 - Handlers live in implementation projects
+- **Cross-Module Handlers**: Handlers for commands/queries/events from other modules' `.Contracts` projects should be placed in an `Integrations/` folder to clearly indicate they handle external contracts
+- **Internal vs External Commands**: When a module needs to expose functionality to other modules:
+  - Create a public command/query in `.Contracts` project (e.g., `CreateUserCommand`)
+  - Create an internal command/query in `UseCases/` folder (e.g., `CreateUserInternalCommand`)
+  - Implement the actual business logic in a `UseCases/` handler
+  - Create an `Integrations/` handler for the `.Contracts` command that translates to the internal command and delegates via Mediator
+  - This keeps internal implementation details separate from external contracts
 
 ### Domain Events
 Use `INotification` from Mediator for domain events:
