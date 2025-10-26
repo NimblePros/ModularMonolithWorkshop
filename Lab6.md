@@ -9,6 +9,73 @@ In this lab, we'll implement cross-module communication patterns and improve the
 - Generate and manage user passwords programmatically
 - Send transactional emails using the Email module
 
+## Prerequisites: Add Package References to Contracts Projects
+
+Before we begin, we need to add the necessary package references to the Contracts projects so they can use Mediator commands, queries, and events.
+
+### Update Products.Contracts
+
+**`Nimble.Modulith.Products.Contracts/Nimble.Modulith.Products.Contracts.csproj`:**
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mediator.Abstractions" />
+  </ItemGroup>
+
+</Project>
+```
+
+### Update Users.Contracts
+
+**`Nimble.Modulith.Users.Contracts/Nimble.Modulith.Users.Contracts.csproj`:**
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mediator.Abstractions" />
+    <PackageReference Include="Ardalis.Result" />
+  </ItemGroup>
+
+</Project>
+```
+
+### Update Customers.Contracts
+
+**`Nimble.Modulith.Customers.Contracts/Nimble.Modulith.Customers.Contracts.csproj`:**
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mediator.Abstractions" />
+  </ItemGroup>
+
+</Project>
+```
+
+> **Note:** Contracts projects need `Mediator.Abstractions` to define commands, queries, and events. The `Ardalis.Result` package is only needed when commands/queries return `Result<T>` types.
+
 ## Step 1: Fix Order Pricing
 
 Currently, order endpoints require clients to provide product prices, which is a security risk. Products should fetch their prices from the Products module.
@@ -321,15 +388,9 @@ public record OrderCreatedEvent(
     decimal TotalAmount,
     List<OrderItemDetails> Items
 ) : INotification;
-
-public record OrderItemDetails(
-    int ProductId,
-    string ProductName,
-    int Quantity,
-    decimal UnitPrice,
-    decimal TotalPrice
-);
 ```
+
+> **Note:** This event uses the existing `OrderItemDetails` record already defined in `OrderDetails.cs` in the same namespace, which includes the `Id` field needed for event tracking.
 
 ### 1.10: Create ConfirmOrder Command and Handler
 
@@ -479,6 +540,7 @@ public class Confirm(IMediator mediator, ICustomerAuthorizationService authServi
             result.Value.OrderDate,
             result.Value.TotalAmount,
             result.Value.Items.Select(i => new OrderItemDetails(
+                i.Id,
                 i.ProductId,
                 i.ProductName,
                 i.Quantity,
