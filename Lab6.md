@@ -142,21 +142,72 @@ Update the Customers project file to reference Products.Contracts:
 </ItemGroup>
 ```
 
-### 1.4: Remove UnitPrice from CreateOrderCommand
+### 1.4: Remove UnitPrice and ProductName from CreateOrderCommand
+
+Both the product name and price should come from the Products module, not from the client request:
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderCommand.cs`:**
 
 ```csharp
 public record CreateOrderItemDto(
     int ProductId,
-    string ProductName,
     int Quantity
-);  // UnitPrice removed
+);  // UnitPrice and ProductName removed - will be fetched from Products module
 ```
 
-### 1.5: Update CreateOrderHandler to Fetch Prices
+### 1.5: Create GetProductDetailsQuery
 
-Modify the handler to query product prices from the Products module:
+We need a query to fetch both product name and price from the Products module:
+
+**`Nimble.Modulith.Products.Contracts/GetProductDetailsQuery.cs`:**
+
+```csharp
+using Mediator;
+
+namespace Nimble.Modulith.Products.Contracts;
+
+public record GetProductDetailsQuery(int ProductId) : IQuery<ProductDetailsResult>;
+
+public record ProductDetailsResult(
+    int Id,
+    string Name,
+    decimal Price);
+```
+
+**`Nimble.Modulith.Products/UseCases/Queries/GetProductDetailsQueryHandler.cs`:**
+
+```csharp
+using Mediator;
+using Microsoft.EntityFrameworkCore;
+using Nimble.Modulith.Products.Contracts;
+using Nimble.Modulith.Products.Data;
+
+namespace Nimble.Modulith.Products.UseCases.Queries;
+
+public class GetProductDetailsQueryHandler(ProductsDbContext dbContext)
+    : IQueryHandler<GetProductDetailsQuery, ProductDetailsResult>
+{
+    public async ValueTask<ProductDetailsResult> Handle(GetProductDetailsQuery query, CancellationToken cancellationToken)
+    {
+        var product = await dbContext.Products
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == query.ProductId, cancellationToken);
+
+        if (product == null)
+        {
+            throw new InvalidOperationException($"Product with ID {query.ProductId} not found");
+        }
+
+        return new ProductDetailsResult(product.Id, product.Name, product.Price);
+    }
+}
+```
+
+### 1.6: Update CreateOrderHandler to Fetch Product Details
+
+### 1.6: Update CreateOrderHandler to Fetch Product Details
+
+Modify the handler to query product details (name and price) from the Products module:
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderHandler.cs`:**
 
@@ -195,26 +246,26 @@ public class CreateOrderHandler(
             CreatedAt = DateTime.UtcNow
         };
 
-        // Add order items - fetch prices from Products module
+        // Add order items - fetch product details from Products module
         foreach (var itemDto in command.Items)
         {
-            // Fetch the product price from the Products module
-            decimal unitPrice;
+            // Fetch the product details (name and price) from the Products module
+            ProductDetailsResult productDetails;
             try
             {
-                unitPrice = await mediator.Send(new GetProductPriceQuery(itemDto.ProductId), ct);
+                productDetails = await mediator.Send(new GetProductDetailsQuery(itemDto.ProductId), ct);
             }
             catch (InvalidOperationException ex)
             {
-                return Result<OrderDto>.Error($"Failed to get price for product {itemDto.ProductId}: {ex.Message}");
+                return Result<OrderDto>.Error($"Failed to get product details for product {itemDto.ProductId}: {ex.Message}");
             }
 
             var item = new OrderItem
             {
                 ProductId = itemDto.ProductId,
-                ProductName = itemDto.ProductName,
+                ProductName = productDetails.Name,
                 Quantity = itemDto.Quantity,
-                UnitPrice = unitPrice
+                UnitPrice = productDetails.Price
             };
             order.AddItem(item);
         }
@@ -247,27 +298,25 @@ public class CreateOrderHandler(
 }
 ```
 
-### 1.6: Update Order Endpoint Request DTOs
+### 1.7: Update Order Endpoint Request DTOs
 
-Remove UnitPrice from the endpoint request DTOs:
+Remove UnitPrice and ProductName from the endpoint request DTOs:
 
 **`Nimble.Modulith.Customers/Endpoints/Orders/OrderResponse.cs`:**
 
 ```csharp
 public record CreateOrderItemRequest(
     int ProductId,
-    string ProductName,
     int Quantity
-);  // UnitPrice removed
+);  // UnitPrice and ProductName removed - fetched from Products module
 
 public record AddOrderItemRequest(
     int ProductId,
-    string ProductName,
     int Quantity
-);  // UnitPrice removed
+);  // UnitPrice and ProductName removed - fetched from Products module
 ```
 
-### 1.7: Update Create Endpoint
+### 1.8: Update Create Endpoint
 
 **`Nimble.Modulith.Customers/Endpoints/Orders/Create.cs`:**
 
@@ -277,13 +326,12 @@ var command = new CreateOrderCommand(
     req.OrderDate,
     req.Items.Select(i => new CreateOrderItemDto(
         i.ProductId,
-        i.ProductName,
-        i.Quantity  // No UnitPrice
+        i.Quantity  // No ProductName or UnitPrice
     )).ToList()
 );
 ```
 
-### 1.8: Update AddOrderItemCommand and Handler
+### 1.9: Update AddOrderItemCommand and Handler
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/AddOrderItemCommand.cs`:**
 
@@ -291,9 +339,8 @@ var command = new CreateOrderCommand(
 public record AddOrderItemCommand(
     int OrderId,
     int ProductId,
-    string ProductName,
     int Quantity
-) : ICommand<Result<OrderDto>>;  // UnitPrice removed
+) : ICommand<Result<OrderDto>>;  // UnitPrice and ProductName removed
 ```
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/AddOrderItemHandler.cs`:**
@@ -319,26 +366,34 @@ public class AddOrderItemHandler(IRepository<Order> repository, IMediator mediat
             return Result<OrderDto>.NotFound();
         }
 
-        // Fetch the product price from the Products module
-        decimal unitPrice;
+        // Fetch the product details (name and price) from the Products module
+        ProductDetailsResult productDetails;
         try
         {
-            unitPrice = await mediator.Send(new GetProductPriceQuery(command.ProductId), ct);
+            productDetails = await mediator.Send(new GetProductDetailsQuery(command.ProductId), ct);
         }
         catch (InvalidOperationException ex)
         {
-            return Result<OrderDto>.Error($"Failed to get price for product {command.ProductId}: {ex.Message}");
+            return Result<OrderDto>.Error($"Failed to get product details for product {command.ProductId}: {ex.Message}");
         }
 
         var item = new OrderItem
         {
             ProductId = command.ProductId,
-            ProductName = command.ProductName,
+            ProductName = productDetails.Name,
             Quantity = command.Quantity,
-            UnitPrice = unitPrice
+            UnitPrice = productDetails.Price
         };
 
-        order.AddItem(item);
+        try
+        {
+            order.AddItem(item);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Result<OrderDto>.Error(ex.Message);
+        }
+        
         order.UpdatedAt = DateTime.UtcNow;
 
         await repository.UpdateAsync(order, ct);
@@ -735,13 +790,14 @@ public class CreateUserCommandHandler(IMediator mediator)
 
 ### 2.6: Update CreateCustomerHandler
 
-Now update the customer creation handler to create a user account and send welcome email:
+Now update the customer creation handler to create a user account (if needed) and send welcome email. This handler checks if a user already exists before attempting to create one, which allows creating customer profiles for existing users without errors:
 
 **`Nimble.Modulith.Customers/UseCases/Customers/Commands/CreateCustomerHandler.cs`:**
 
 ```csharp
 using Ardalis.Result;
 using Mediator;
+using Microsoft.AspNetCore.Identity;
 using Nimble.Modulith.Customers.Domain.CustomerAggregate;
 using Nimble.Modulith.Customers.Domain.Interfaces;
 using Nimble.Modulith.Email.Contracts;
@@ -749,21 +805,31 @@ using Nimble.Modulith.Users.Contracts;
 
 namespace Nimble.Modulith.Customers.UseCases.Customers.Commands;
 
-public class CreateCustomerHandler(IRepository<Customer> repository, IMediator mediator) 
+public class CreateCustomerHandler(
+    IRepository<Customer> repository, 
+    IMediator mediator,
+    UserManager<IdentityUser> userManager) 
     : ICommandHandler<CreateCustomerCommand, Result<CustomerDto>>
 {
     public async ValueTask<Result<CustomerDto>> Handle(CreateCustomerCommand command, CancellationToken ct)
     {
-        // Generate a random password
-        var password = Guid.NewGuid().ToString("N")[..12]; // First 12 chars of GUID
+        // Check if user already exists
+        var existingUser = await userManager.FindByEmailAsync(command.Email);
+        string? temporaryPassword = null;
 
-        // Create Identity user
-        var createUserCommand = new CreateUserCommand(command.Email, password);
-        var userResult = await mediator.Send(createUserCommand, ct);
-
-        if (!userResult.IsSuccess)
+        if (existingUser == null)
         {
-            return Result<CustomerDto>.Error($"Failed to create user account: {userResult.Errors.FirstOrDefault()}");
+            // Generate a random password
+            temporaryPassword = Guid.NewGuid().ToString("N")[..12]; // First 12 chars of GUID
+
+            // Create Identity user
+            var createUserCommand = new CreateUserCommand(command.Email, temporaryPassword);
+            var userResult = await mediator.Send(createUserCommand, ct);
+
+            if (!userResult.IsSuccess)
+            {
+                return Result<CustomerDto>.Error($"Failed to create user account: {userResult.Errors.FirstOrDefault()}");
+            }
         }
 
         // Create customer record
@@ -786,14 +852,16 @@ public class CreateCustomerHandler(IRepository<Customer> repository, IMediator m
         await repository.AddAsync(customer, ct);
         await repository.SaveChangesAsync(ct);
 
-        // Send welcome email with password
-        var emailBody = $@"
+        // Send welcome email - only include password if a new user was created
+        if (temporaryPassword != null)
+        {
+            var emailBody = $@"
 Welcome to our service!
 
 Your account has been created successfully.
 
 Email: {command.Email}
-Temporary Password: {password}
+Temporary Password: {temporaryPassword}
 
 Please log in and change your password as soon as possible.
 
@@ -801,13 +869,37 @@ Best regards,
 The Team
 ";
 
-        var emailCommand = new SendEmailCommand(
-            command.Email,
-            "Welcome - Your Account Has Been Created",
-            emailBody
-        );
+            var emailCommand = new SendEmailCommand(
+                command.Email,
+                "Welcome - Your Account Has Been Created",
+                emailBody
+            );
 
-        await mediator.Send(emailCommand, ct);
+            await mediator.Send(emailCommand, ct);
+        }
+        else
+        {
+            var emailBody = $@"
+Welcome back!
+
+A customer profile has been created for your existing account.
+
+Email: {command.Email}
+
+You can continue using your existing password to access our services.
+
+Best regards,
+The Team
+";
+
+            var emailCommand = new SendEmailCommand(
+                command.Email,
+                "Customer Profile Created",
+                emailBody
+            );
+
+            await mediator.Send(emailCommand, ct);
+        }
 
         var dto = new CustomerDto(
             customer.Id,
@@ -829,6 +921,14 @@ The Team
         return Result<CustomerDto>.Success(dto);
     }
 }
+```
+
+**Key changes:**
+- Added `UserManager<IdentityUser>` dependency injection
+- Check if user exists with `FindByEmailAsync()` before attempting to create
+- Only generate password and send welcome email with credentials if creating a new user
+- Send different email message for existing users getting a customer profile
+- This prevents duplicate user errors when creating customers for existing accounts
 ```
 
 ## Step 3: Implement Password Reset

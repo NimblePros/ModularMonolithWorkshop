@@ -71,6 +71,7 @@ Update `Nimble.Modulith.Email.csproj` to add package references:
   <ItemGroup>
     <PackageReference Include="MailKit" />
     <PackageReference Include="Mediator.Abstractions" />
+    <PackageReference Include="Serilog.AspNetCore" />
   </ItemGroup>
 
   <ItemGroup>
@@ -413,26 +414,30 @@ namespace Nimble.Modulith.Email;
 
 public static class EmailModuleExtensions
 {
-  public static IServiceCollection AddEmailModule(
-    this IServiceCollection services,
-    IConfiguration configuration)
+  public static WebApplicationBuilder AddEmailModuleServices(
+    this WebApplicationBuilder builder,
+    Serilog.ILogger logger)
   {
+    logger.Information("Adding Email module services...");
+
     // Configure email settings
-    services.Configure<EmailSettings>(configuration.GetSection("Email"));
+    builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 
     // Register email sender as singleton (thread-safe, no scoped dependencies)
-    services.AddSingleton<IEmailSender, SmtpEmailSender>();
+    builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
 
     // Register queue service as singleton (shared across all requests)
-    services.AddSingleton(typeof(IQueueService<>), typeof(ChannelQueueService<>));
+    builder.Services.AddSingleton(typeof(IQueueService<>), typeof(ChannelQueueService<>));
 
     // Register the command handler
-    services.AddScoped<SendEmailCommandHandler>();
+    builder.Services.AddScoped<SendEmailCommandHandler>();
 
     // Register the background worker
-    services.AddHostedService<EmailSendingBackgroundWorker>();
+    builder.Services.AddHostedService<EmailSendingBackgroundWorker>();
 
-    return services;
+    logger.Information("Email module services added successfully");
+
+    return builder;
   }
 }
 ```
@@ -456,7 +461,7 @@ using Nimble.Modulith.Email;
 builder.AddUsersModuleServices(logger);
 builder.AddProductsModuleServices(logger);
 builder.AddCustomersModuleServices(logger);
-builder.Services.AddEmailModule(builder.Configuration);
+builder.AddEmailModuleServices(logger);
 ```
 
 #### 1.10: Configure Email Settings
