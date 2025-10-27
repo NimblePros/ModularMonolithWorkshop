@@ -266,7 +266,7 @@ We will also need to add a few NuGet packages. Look at the `Nimble.Modulith.User
 		<PackageReference Include="FastEndpoints.Security" />
 		<PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Design" />
 		<PackageReference Include="Aspire.Microsoft.EntityFrameworkCore.SqlServer" />
 		<PackageReference Include="Serilog.AspNetCore" />
 	</ItemGroup>
