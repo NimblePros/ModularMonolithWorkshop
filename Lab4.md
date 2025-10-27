@@ -1291,7 +1291,8 @@ public class AddOrderItemHandler(IRepository<Order> repository)
 {
     public async ValueTask<Result<OrderDto>> Handle(AddOrderItemCommand command, CancellationToken ct)
     {
-        var order = await repository.GetByIdAsync(command.OrderId, ct);
+        var spec = new OrderByIdSpec(command.OrderId);
+        var order = await repository.SingleOrDefaultAsync(spec, ct);
 
         if (order is null)
         {
