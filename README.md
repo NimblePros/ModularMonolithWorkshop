@@ -12,7 +12,7 @@ You should be familiar with ASP.NET Core and C#. Other required concepts will be
 
 ## Labs
 
-Get started with the [labs](Labs.md).
+Get started with the [labs](Labs.md). They use .NET 10, Docker, and Aspire.
 
 ## Resources
 

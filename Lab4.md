@@ -1871,7 +1871,7 @@ public class ListByDate(IMediator mediator) : EndpointWithoutRequest<List<OrderR
         var dateString = Route<string>("date");
         if (!DateOnly.TryParse(dateString, out var date))
         {
-            await SendErrorsAsync(cancellation: ct);
+            await Send.ErrorsAsync(cancellation: ct);
             return;
         }
 
