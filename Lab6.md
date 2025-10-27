@@ -76,6 +76,89 @@ Before we begin, we need to add the necessary package references to the Contract
 
 > **Note:** Contracts projects need `Mediator.Abstractions` to define commands, queries, and events. The `Ardalis.Result` package is only needed when commands/queries return `Result<T>` types.
 
+> **Note:** You can remove the framework and implicit usings from most projects since these are already in `Directory.Build.props`.
+
+## Optional: Add Logging Behavior
+
+We can add a Logging Behavior that will show us every time a Mediator message is sent in the pipeline. Add this to the root of the web host project:
+
+```csharp
+using Mediator;
+using System.Diagnostics;
+using System.Reflection;
+
+namespace Nimble.Modulith.Web;
+
+public class LoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    where TRequest : notnull, IMessage
+{
+    private readonly ILogger<LoggingBehavior<TRequest, TResponse>> _logger;
+
+    public LoggingBehavior(ILogger<LoggingBehavior<TRequest, TResponse>> logger)
+    {
+        _logger = logger;
+    }
+
+    public async ValueTask<TResponse> Handle(
+        TRequest request,
+        MessageHandlerDelegate<TRequest, TResponse> next,
+        CancellationToken cancellationToken)
+    {
+        //Guard.Against.Null(request);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Handling {RequestName}", typeof(TRequest).Name);
+
+            Type myType = request.GetType();
+            IList<PropertyInfo> props = new List<PropertyInfo>(myType.GetProperties());
+            foreach (PropertyInfo prop in props)
+            {
+                object? propValue = prop?.GetValue(request, null);
+                _logger.LogInformation("Property {Property} : {@Value}", prop?.Name, propValue);
+            }
+        }
+
+        var sw = Stopwatch.StartNew();
+
+        var response = await next(request, cancellationToken);
+
+        _logger.LogInformation("Handled {RequestName} with {Response} in {ms} ms", typeof(TRequest).Name, response, sw.ElapsedMilliseconds);
+        sw.Stop();
+        return response;
+    }
+}
+```
+
+And then update Program.cs with the following where we wire up Mediator:
+
+```csharp
+// Add Mediator with source generation
+builder.Services.AddMediator(options =>
+{
+    options.ServiceLifetime = ServiceLifetime.Scoped;
+    options.PipelineBehaviors =
+    [
+        typeof(LoggingBehavior<,>)
+    ];
+});
+```
+
+Run the application and any endpoint that uses `_mediator.Send()` should start showing up in the logs like this:
+
+```
+info: Nimble.Modulith.Web.LoggingBehavior[0]
+      Handling GetCustomerByIdQuery
+info: Nimble.Modulith.Web.LoggingBehavior[0]
+      Property Id : 1
+info: Microsoft.EntityFrameworkCore.Database.Command[20101]
+      Executed DbCommand (13ms) [Parameters=[@customerId='?' (DbType = Int32)], CommandType='Text', CommandTimeout='30']
+      SELECT TOP(1) [c].[Id], [c].[CreatedAt], [c].[Email], [c].[FirstName], [c].[LastName], [c].[PhoneNumber], [c].[UpdatedAt], [c].[Address_City], [c].[Address_Country], [c].[Address_PostalCode], [c].[Address_State], [c].[Address_Street]
+      FROM [Customers].[Customers] AS [c]
+      WHERE [c].[Id] = @customerId
+info: Nimble.Modulith.Web.LoggingBehavior[0]
+      Handled GetCustomerByIdQuery with Ardalis.Result.Result`1[Nimble.Modulith.Customers.UseCases.Customers.CustomerDto] in 65 ms
+```
+
 ## Step 1: Fix Order Pricing
 
 Currently, order endpoints require clients to provide product prices, which is a security risk. Products should fetch their prices from the Products module.
