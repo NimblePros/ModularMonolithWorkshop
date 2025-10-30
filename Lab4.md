@@ -1942,7 +1942,9 @@ public static class CustomersModuleExtensions
 
 ### 1. Update Program.cs
 
-Open `Nimble.Modulith.Web/Program.cs` and add the Customers module registration after the Users and Products modules:
+Open `Nimble.Modulith.Web/Program.cs` and 
+- add the Mediator source generation after adding the service defaults
+- add the Customers module registration after the Users and Products modules
 
 ```csharp
 using FastEndpoints;
