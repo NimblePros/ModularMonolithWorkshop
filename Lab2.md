@@ -143,7 +143,7 @@ public class Register : Endpoint<RegisterRequest, RegisterResponse>
 }
 ```
 
-Now we should be able to run the application and test it by navigating to the /register endpoint (which youc an also find from /swagger).
+Now we should be able to run the application and test it by navigating to the /register endpoint (which you can also find from /swagger).
 
 ### 5. Create the UsersDbContext
 

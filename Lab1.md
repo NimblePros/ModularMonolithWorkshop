@@ -189,4 +189,4 @@ The whole thing should look like this:
 
 ## Summary
 
-At this point we have the basics: 2 Aspire projects, a eb host project, and 2 projects that represent our Users module. In the next lab we will configure Aspire to work with the web host and module and get user registration working.
+At this point we have the basics: 2 Aspire projects, a Web host project, and 2 projects that represent our Users module. In the next lab we will configure Aspire to work with the web host and module and get user registration working.
