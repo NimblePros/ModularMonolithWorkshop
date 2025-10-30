@@ -1945,11 +1945,14 @@ public static class CustomersModuleExtensions
 Open `Nimble.Modulith.Web/Program.cs` and add the Customers module registration after the Users and Products modules:
 
 ```csharp
-using Nimble.Modulith.Users;
-using Nimble.Modulith.Products;
-using Nimble.Modulith.Customers;
-using Serilog;
+using FastEndpoints;
+using FastEndpoints.Security;
+using FastEndpoints.Swagger;
 using Mediator;
+using Nimble.Modulith.Customers;
+using Nimble.Modulith.Products;
+using Nimble.Modulith.Users;
+using Serilog;
 
 var logger = Log.Logger = new LoggerConfiguration()
   .Enrich.FromLogContext()
@@ -1959,7 +1962,6 @@ var logger = Log.Logger = new LoggerConfiguration()
 logger.Information("Starting web host");
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseSerilog((_, config) => config.ReadFrom.Configuration(builder.Configuration));
 
 // Add service defaults (Aspire configuration)
 builder.AddServiceDefaults();
@@ -1972,46 +1974,36 @@ builder.Services.AddMediator(options =>
 
 // Add FastEndpoints with JWT Bearer Authentication and Authorization
 builder.Services.AddFastEndpoints()
-  .AddAuthenticationJwtBearer(o => o.SigningKey = builder.Configuration["Auth:JwtSecret"]!)
-  .AddAuthorization();
-
-// Add Swagger/OpenAPI
-builder.Services.SwaggerDocument(o =>
-{
-    o.DocumentSettings = s =>
+    .AddAuthenticationJwtBearer(s =>
     {
-        s.Title = "Nimble Modulith API";
-        s.Version = "v1";
-    };
-});
+        s.SigningKey = builder.Configuration["Auth:JwtSecret"];
+    })
+    .AddAuthorization()
+    .SwaggerDocument();
 
-// Register modules using IHostApplicationBuilder pattern
+// Add module services
 builder.AddUsersModuleServices(logger);
 builder.AddProductsModuleServices(logger);
 builder.AddCustomersModuleServices(logger);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline
-app.UseDefaultExceptionHandler();
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseHttpsRedirection();
+
+// Add authentication and authorization middleware
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Configure FastEndpoints
-app.UseFastEndpoints(config =>
-{
-    config.Endpoints.RoutePrefix = string.Empty;
-});
+app.UseFastEndpoints()
+    .UseSwaggerGen();
 
-// Only use Swagger in Development
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwaggerGen();
-}
-
-app.MapDefaultEndpoints();
-
-// Ensure databases are created and migrated
+// Ensure module databases are created
 await app.EnsureUsersModuleDatabaseAsync();
 await app.EnsureProductsModuleDatabaseAsync();
 await app.EnsureCustomersModuleDatabaseAsync();
