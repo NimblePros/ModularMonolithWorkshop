@@ -326,9 +326,6 @@ Create `Nimble.Modulith.Customers/Domain/Interfaces/IRepository.cs`:
 ```csharp
 using Ardalis.Specification;
 
-```csharp
-using Ardalis.Specification;
-
 namespace Nimble.Modulith.Customers.Domain.Interfaces;
 
 public interface IRepository<T> : IRepositoryBase<T> where T : class
@@ -1909,7 +1906,6 @@ public class ListByDate(IMediator mediator) : EndpointWithoutRequest<List<OrderR
 
 Create `Nimble.Modulith.Customers/CustomersModuleExtensions.cs`:
 
-```csharp
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
