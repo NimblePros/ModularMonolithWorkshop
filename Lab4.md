@@ -326,9 +326,6 @@ Create `Nimble.Modulith.Customers/Domain/Interfaces/IRepository.cs`:
 ```csharp
 using Ardalis.Specification;
 
-```csharp
-using Ardalis.Specification;
-
 namespace Nimble.Modulith.Customers.Domain.Interfaces;
 
 public interface IRepository<T> : IRepositoryBase<T> where T : class
@@ -1363,7 +1360,8 @@ public class DeleteOrderItemHandler(IRepository<Order> repository)
 {
     public async ValueTask<Result<OrderDto>> Handle(DeleteOrderItemCommand command, CancellationToken ct)
     {
-        var order = await repository.GetByIdAsync(command.OrderId, ct);
+        var spec = new OrderByIdSpec(command.OrderId);
+        var order = await repository.FirstOrDefaultAsync(spec, ct);
 
         if (order is null)
         {
@@ -1910,24 +1908,30 @@ public class ListByDate(IMediator mediator) : EndpointWithoutRequest<List<OrderR
 Create `Nimble.Modulith.Customers/CustomersModuleExtensions.cs`:
 
 ```csharp
-```csharp
+using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Nimble.Modulith.Customers.Domain.Interfaces;
 using Nimble.Modulith.Customers.Infrastructure.Data;
+using Serilog;
 
 namespace Nimble.Modulith.Customers;
 
 public static class CustomersModuleExtensions
 {
-    public static IHostApplicationBuilder AddCustomersModuleServices(this IHostApplicationBuilder builder, ILogger logger)
+    public static IHostApplicationBuilder AddCustomersModuleServices(
+        this IHostApplicationBuilder builder,
+        ILogger logger)
     {
-        // Register the DbContext with Aspire
+        // Add SQL Server DbContext with Aspire
         builder.AddSqlServerDbContext<CustomersDbContext>("customersdb");
 
         // Register repositories
         builder.Services.AddScoped(typeof(IRepository<>), typeof(EfRepository<>));
         builder.Services.AddScoped(typeof(IReadRepository<>), typeof(EfReadRepository<>));
+
+        logger.Information("{Module} module services registered", nameof(CustomersModuleExtensions).Replace("ModuleExtensions", ""));
 
         return builder;
     }
@@ -1937,6 +1941,7 @@ public static class CustomersModuleExtensions
         using var scope = app.Services.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<CustomersDbContext>();
         await context.Database.MigrateAsync();
+        
         return app;
     }
 }
@@ -1946,14 +1951,19 @@ public static class CustomersModuleExtensions
 
 ### 1. Update Program.cs
 
-Open `Nimble.Modulith.Web/Program.cs` and add the Customers module registration after the Users and Products modules:
+Open `Nimble.Modulith.Web/Program.cs` and 
+- add the Mediator source generation after adding the service defaults
+- add the Customers module registration after the Users and Products modules
 
 ```csharp
-using Nimble.Modulith.Users;
-using Nimble.Modulith.Products;
-using Nimble.Modulith.Customers;
-using Serilog;
+using FastEndpoints;
+using FastEndpoints.Security;
+using FastEndpoints.Swagger;
 using Mediator;
+using Nimble.Modulith.Customers;
+using Nimble.Modulith.Products;
+using Nimble.Modulith.Users;
+using Serilog;
 
 var logger = Log.Logger = new LoggerConfiguration()
   .Enrich.FromLogContext()
@@ -1963,7 +1973,6 @@ var logger = Log.Logger = new LoggerConfiguration()
 logger.Information("Starting web host");
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseSerilog((_, config) => config.ReadFrom.Configuration(builder.Configuration));
 
 // Add service defaults (Aspire configuration)
 builder.AddServiceDefaults();
@@ -1976,46 +1985,36 @@ builder.Services.AddMediator(options =>
 
 // Add FastEndpoints with JWT Bearer Authentication and Authorization
 builder.Services.AddFastEndpoints()
-  .AddAuthenticationJwtBearer(o => o.SigningKey = builder.Configuration["Auth:JwtSecret"]!)
-  .AddAuthorization();
-
-// Add Swagger/OpenAPI
-builder.Services.SwaggerDocument(o =>
-{
-    o.DocumentSettings = s =>
+    .AddAuthenticationJwtBearer(s =>
     {
-        s.Title = "Nimble Modulith API";
-        s.Version = "v1";
-    };
-});
+        s.SigningKey = builder.Configuration["Auth:JwtSecret"];
+    })
+    .AddAuthorization()
+    .SwaggerDocument();
 
-// Register modules using IHostApplicationBuilder pattern
+// Add module services
 builder.AddUsersModuleServices(logger);
 builder.AddProductsModuleServices(logger);
 builder.AddCustomersModuleServices(logger);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline
-app.UseDefaultExceptionHandler();
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
+app.UseHttpsRedirection();
+
+// Add authentication and authorization middleware
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Configure FastEndpoints
-app.UseFastEndpoints(config =>
-{
-    config.Endpoints.RoutePrefix = string.Empty;
-});
+app.UseFastEndpoints()
+    .UseSwaggerGen();
 
-// Only use Swagger in Development
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwaggerGen();
-}
-
-app.MapDefaultEndpoints();
-
-// Ensure databases are created and migrated
+// Ensure module databases are created
 await app.EnsureUsersModuleDatabaseAsync();
 await app.EnsureProductsModuleDatabaseAsync();
 await app.EnsureCustomersModuleDatabaseAsync();
@@ -2117,13 +2116,6 @@ GET {{Nimble.Modulith.Web_HostAddress}}/orders/1
 
 ### List Orders by Date
 GET {{Nimble.Modulith.Web_HostAddress}}/orders/by-date/2025-10-24
-
-### Update Order Status
-PATCH {{Nimble.Modulith.Web_HostAddress}}/orders/1/status
-Content-Type: application/json
-{
-  "status": "Processing"
-}
 ```
 
 ## Key Points

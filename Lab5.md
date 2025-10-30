@@ -655,7 +655,6 @@ This creates a migration that will insert the Admin and Customer roles when the 
 The Users module needs to send email commands, so add a reference to the Email.Contracts project:
 
 ```powershell
-cd Nimble.Modulith.Users
 dotnet add reference ../Nimble.Modulith.Email.Contracts/Nimble.Modulith.Email.Contracts.csproj
 ```
 

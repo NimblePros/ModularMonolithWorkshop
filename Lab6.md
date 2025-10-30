@@ -288,8 +288,6 @@ public class GetProductDetailsQueryHandler(ProductsDbContext dbContext)
 
 ### 1.6: Update CreateOrderHandler to Fetch Product Details
 
-### 1.6: Update CreateOrderHandler to Fetch Product Details
-
 Modify the handler to query product details (name and price) from the Products module:
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderHandler.cs`:**
@@ -1012,7 +1010,6 @@ The Team
 - Only generate password and send welcome email with credentials if creating a new user
 - Send different email message for existing users getting a customer profile
 - This prevents duplicate user errors when creating customers for existing accounts
-```
 
 ## Step 3: Implement Password Reset
 

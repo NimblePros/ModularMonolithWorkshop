@@ -14,15 +14,7 @@ When we're done, we will have a solution file called `Nimble.Modulith.slnx` whic
 
 Follow these steps to create the modular monolith solution from scratch. You can do this in a folder called `labs` (which is in the .gitignore file and so won't be added to git by default). If you want source control, create a new repo or use a subfolder called `mylabs` which should be tracked by git.
 
-### 1. Create the solution file
-
-```bash
-dotnet new sln --name Nimble.Modulith --output .
-```
-
-This creates a `Nimble.Modulith.slnx` file in the repository root.
-
-### 2. Create the AspireHost project
+### 1. Create the AspireHost project
 
 First, install the Aspire CLI if you haven't already:
 
@@ -44,7 +36,7 @@ aspire new aspire
 ```
 When asked, give the name Nimble.Modulith. Keep the default output path. No tests.
 
-### 3. Change to slnx file
+### 2. Change to slnx file
 
 ```bash
 cd Nimble.Modulith
@@ -61,7 +53,7 @@ and files:
 
 Nimble.Modulith.slnx
 
-### 4. Create the ASP.NET Core minimal Web API project
+### 3. Create the ASP.NET Core minimal Web API project
 
 Run the following commands from the same folder as your slnx file.
 
@@ -70,26 +62,26 @@ dotnet new webapi --name Nimble.Modulith.Web --output Nimble.Modulith.Web --use-
 dotnet sln add Nimble.Modulith.Web/Nimble.Modulith.Web.csproj --solution-folder "_Host"
 ```
 
-### 5. Create the Users class library
+### 4. Create the Users class library
 
 ```bash
 dotnet new classlib --name Nimble.Modulith.Users --output Nimble.Modulith.Users --framework net10.0
 ```
 
-### 6. Create solution folder for Users Module
+### 5. Create solution folder for Users Module
 
 ```bash
 dotnet sln add Nimble.Modulith.Users/Nimble.Modulith.Users.csproj --solution-folder "Users Module"
 ```
 
-### 7. Create the Users.Contracts class library
+### 6. Create the Users.Contracts class library
 
 ```bash
 dotnet new classlib --name Nimble.Modulith.Users.Contracts --output Nimble.Modulith.Users.Contracts --framework net10.0
 dotnet sln add Nimble.Modulith.Users.Contracts/Nimble.Modulith.Users.Contracts.csproj --solution-folder "Users Module"
 ```
 
-### 8. Verify all projects are in the solution file
+### 7. Verify all projects are in the solution file
 
 ```bash
 dotnet sln list
@@ -108,7 +100,7 @@ dotnet sln add Nimble.Modulith.ServiceDefaults/Nimble.Modulith.ServiceDefaults.c
 
 This will change the default startup project. When you open in an IDE you'll need to set AppHost as the startup project manually.
 
-### 9. Use Central Package Management
+### 8. Use Central Package Management
 
 We're going to have a lot of projects. We don't want to have different package versions all over the place. Run this from the folder with the slnx file. We're going to use this tool to help: [CentralizedPackageConverter](https://github.com/Webreaper/CentralisedPackageConverter)
 
@@ -117,7 +109,7 @@ We're going to have a lot of projects. We don't want to have different package v
  central-pkg-converter .
 ```
 
-### 10. Ensure all projects target .NET 10
+### 9. Ensure all projects target .NET 10
 
 The Aspire projects created by `aspire new` may target a different framework version. Use a central `Directory.Build.props` file to set the .NET version and remove the `<TargetFramework>net9.0</TargetFramework>` element from the two Aspire projects.
 
@@ -197,4 +189,4 @@ The whole thing should look like this:
 
 ## Summary
 
-At this point we have the basics: 2 Aspire projects, a eb host project, and 2 projects that represent our Users module. In the next lab we will configure Aspire to work with the web host and module and get user registration working.
+At this point we have the basics: 2 Aspire projects, a Web host project, and 2 projects that represent our Users module. In the next lab we will configure Aspire to work with the web host and module and get user registration working.
