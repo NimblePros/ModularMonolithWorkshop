@@ -288,8 +288,6 @@ public class GetProductDetailsQueryHandler(ProductsDbContext dbContext)
 
 ### 1.6: Update CreateOrderHandler to Fetch Product Details
 
-### 1.6: Update CreateOrderHandler to Fetch Product Details
-
 Modify the handler to query product details (name and price) from the Products module:
 
 **`Nimble.Modulith.Customers/UseCases/Orders/Commands/CreateOrderHandler.cs`:**
