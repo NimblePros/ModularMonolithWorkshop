@@ -2115,13 +2115,6 @@ GET {{Nimble.Modulith.Web_HostAddress}}/orders/1
 
 ### List Orders by Date
 GET {{Nimble.Modulith.Web_HostAddress}}/orders/by-date/2025-10-24
-
-### Update Order Status
-PATCH {{Nimble.Modulith.Web_HostAddress}}/orders/1/status
-Content-Type: application/json
-{
-  "status": "Processing"
-}
 ```
 
 ## Key Points
