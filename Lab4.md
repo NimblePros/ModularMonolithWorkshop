@@ -1360,7 +1360,8 @@ public class DeleteOrderItemHandler(IRepository<Order> repository)
 {
     public async ValueTask<Result<OrderDto>> Handle(DeleteOrderItemCommand command, CancellationToken ct)
     {
-        var order = await repository.GetByIdAsync(command.OrderId, ct);
+        var spec = new OrderByIdSpec(command.OrderId);
+        var order = await repository.FirstOrDefaultAsync(spec, ct);
 
         if (order is null)
         {
