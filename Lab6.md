@@ -1010,7 +1010,6 @@ The Team
 - Only generate password and send welcome email with credentials if creating a new user
 - Send different email message for existing users getting a customer profile
 - This prevents duplicate user errors when creating customers for existing accounts
-```
 
 ## Step 3: Implement Password Reset
 
